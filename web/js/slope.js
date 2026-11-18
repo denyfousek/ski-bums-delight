@@ -11,7 +11,7 @@ async function geotiff() {
 }
 
 const TILE_M = 1000;
-const TILE_PX = TILE_M / ANALYSIS_CELL_M; // 250
+const NATIVE_PX = 250; // 4 m overview of the 2 m COG tiles
 
 async function findTiles(e0, n0, e1, n1) {
   const corners = [lv95ToWgs(e0, n0), lv95ToWgs(e1, n1), lv95ToWgs(e0, n1), lv95ToWgs(e1, n0)];
@@ -19,7 +19,7 @@ async function findTiles(e0, n0, e1, n1) {
   const lats = corners.map((c) => c[1]);
   const bbox = [Math.min(...lons), Math.min(...lats), Math.max(...lons), Math.max(...lats)].join(',');
   let url = `${ALTI3D_ITEMS_URL}?bbox=${bbox}&limit=100`;
-  const best = new Map(); // "E-N" -> { year, href }
+  const byTile = new Map(); // "E-N" -> { e, n, versions: [{ year, href }] newest first }
   while (url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`swissALTI3D search HTTP ${res.status}`);
@@ -27,31 +27,49 @@ async function findTiles(e0, n0, e1, n1) {
     for (const item of page.features || []) {
       const m = /swissalti3d_(\d{4})_(\d{4})-(\d{4})/.exec(item.id);
       if (!m) continue;
-      const year = Number(m[1]);
-      const key = `${m[2]}-${m[3]}`;
       const asset = Object.values(item.assets).find((a) => /_2_2056_\d+\.tif$/.test(a.href));
       if (!asset) continue;
-      const prev = best.get(key);
-      if (!prev || year > prev.year) best.set(key, { year, href: asset.href, e: Number(m[2]), n: Number(m[3]) });
+      const key = `${m[2]}-${m[3]}`;
+      if (!byTile.has(key)) byTile.set(key, { e: Number(m[2]), n: Number(m[3]), versions: [] });
+      byTile.get(key).versions.push({ year: Number(m[1]), href: asset.href });
     }
     const next = (page.links || []).find((l) => l.rel === 'next');
     url = next ? next.href : null;
   }
-  return [...best.values()].filter((t) => t.e * 1000 >= e0 && t.e * 1000 < e1 && t.n * 1000 >= n0 && t.n * 1000 < n1);
+  for (const t of byTile.values()) t.versions.sort((a, b) => b.year - a.year);
+  return [...byTile.values()].filter((t) => t.e * 1000 >= e0 && t.e * 1000 < e1 && t.n * 1000 >= n0 && t.n * 1000 < n1);
 }
 
-async function readTile(href) {
+async function readTile(href, TILE_PX) {
   const { fromUrl } = await geotiff();
   const tiff = await fromUrl(href);
   const count = await tiff.getImageCount();
+  // Prefer the 250 px overview (4 m); coarser grids are block-averaged from it.
   let image = await tiff.getImage(0);
   for (let i = 1; i < count; i++) {
     const img = await tiff.getImage(i);
-    if (img.getWidth() === TILE_PX) { image = img; break; }
+    if (img.getWidth() === NATIVE_PX) { image = img; break; }
   }
   const opts = { interleave: true };
-  if (image.getWidth() !== TILE_PX) Object.assign(opts, { width: TILE_PX, height: TILE_PX, resampleMethod: 'bilinear' });
-  return image.readRasters(opts);
+  if (image.getWidth() !== NATIVE_PX) Object.assign(opts, { width: NATIVE_PX, height: NATIVE_PX, resampleMethod: 'bilinear' });
+  const data = await image.readRasters(opts);
+  if (TILE_PX === NATIVE_PX) return data;
+  const k = NATIVE_PX / TILE_PX;
+  const out = new Float32Array(TILE_PX * TILE_PX);
+  for (let r = 0; r < TILE_PX; r++) {
+    for (let c = 0; c < TILE_PX; c++) {
+      let sum = 0;
+      let n = 0;
+      for (let dr = 0; dr < k; dr++) {
+        for (let dc = 0; dc < k; dc++) {
+          const v = data[(r * k + dr) * NATIVE_PX + c * k + dc];
+          if (v > -1000) { sum += v; n++; }
+        }
+      }
+      out[r * TILE_PX + c] = n ? sum / n : -9999;
+    }
+  }
+  return out;
 }
 
 async function pool(items, size, fn) {
@@ -66,7 +84,9 @@ async function pool(items, size, fn) {
 }
 
 // Loads a DEM square (LV95, metres) centred on lon/lat. Returns a grid object.
-export async function loadDem(lon, lat, sizeM, onProgress) {
+// cellM: 4 m (native overview) or a multiple of it that divides 1000 (8, 20 ...).
+export async function loadDem(lon, lat, sizeM, onProgress, cellM = ANALYSIS_CELL_M, parallel = 6) {
+  const TILE_PX = TILE_M / cellM;
   const [cE, cN] = wgsToLv95(lon, lat);
   const half = sizeM / 2;
   const e0 = Math.floor((cE - half) / TILE_M) * TILE_M;
@@ -79,8 +99,16 @@ export async function loadDem(lon, lat, sizeM, onProgress) {
   const rows = ((n1 - n0) / TILE_M) * TILE_PX;
   const z = new Float32Array(cols * rows).fill(NaN);
   let done = 0;
-  await pool(tiles, 6, async (t) => {
-    const data = await readTile(t.href);
+  let failed = 0;
+  await pool(tiles, parallel, async (t) => {
+    // Some published tiles cannot be decoded (seen: one 2022 tile); fall back to older years.
+    let data = null;
+    for (const v of t.versions) {
+      try { data = await readTile(v.href, TILE_PX); break; } catch { /* try the next year */ }
+    }
+    done++;
+    if (onProgress) onProgress(done, tiles.length);
+    if (!data) { failed++; return; }
     const c0 = ((t.e * 1000 - e0) / TILE_M) * TILE_PX;
     const r0 = ((n1 - (t.n * 1000 + TILE_M)) / TILE_M) * TILE_PX;
     for (let r = 0; r < TILE_PX; r++) {
@@ -89,10 +117,8 @@ export async function loadDem(lon, lat, sizeM, onProgress) {
         z[(r0 + r) * cols + c0 + c] = v < -1000 ? NaN : v;
       }
     }
-    done++;
-    if (onProgress) onProgress(done, tiles.length);
   });
-  return { z, cols, rows, e0, nTop: n1, cell: ANALYSIS_CELL_M };
+  return { z, cols, rows, e0, nTop: n1, cell: cellM, failedTiles: failed };
 }
 
 // Horn's method. Aspect = compass direction the slope faces (downhill), degrees.

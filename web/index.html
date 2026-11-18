@@ -52,6 +52,12 @@
         <label class="row small"><input type="checkbox" id="sun-shadows"> Cast shadows (approximate: only terrain in view casts)</label>
         <div id="sun-info" class="muted small"></div>
       </div>
+      <p class="muted small">Sun &amp; shade map: exact terrain shadows from swissALTI3D (8 m) for an 8 × 8 km square, including mountains up to 4 km outside. Follows the date, time and sun sliders.</p>
+      <div class="row">
+        <button id="shade-run" class="primary">Sun &amp; shade map</button>
+        <button id="shade-clear">Clear</button>
+      </div>
+      <div id="shade-status" class="muted small"></div>
       <label class="slider">Sun azimuth <output id="az-out"></output>
         <input type="range" id="sun-az" min="0" max="359" value="135"></label>
       <label class="slider">Sun elevation <output id="el-out"></output>

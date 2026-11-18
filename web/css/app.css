@@ -20,6 +20,7 @@
     --line: #3b2f2f;
   }
 }
+:root { color-scheme: light dark; }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
 #globe { position: fixed; inset: 0 0 0 380px; }
@@ -41,6 +42,9 @@ button, select {
   border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer;
 }
 select, input[type=date] { flex: 1; min-width: 0; }
+/* Opened option lists use the OS colours; give them the panel colours so the text stays readable. */
+select { background: var(--panel); color-scheme: light dark; }
+select option { background: var(--panel); color: var(--ink); }
 input[type=date] { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); color-scheme: light dark; }
 input[type=range]:disabled { opacity: .45; }
 button.primary, .seg button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }

@@ -9,6 +9,9 @@ import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './s
 import { fetchWind, renderWind } from './weather.js';
 import { searchScenes, loadScene } from './sentinel.js';
 import { sunPosition, sunTimes } from './sun.js';
+import {
+  SHADE_CORE_M, SHADE_MARGIN_M, SHADE_CELL_M, gridAzimuth, computeShade, buildPixelMap, renderShade, shadeAt, CAST, AWAY, NIGHT,
+} from './shade.js';
 import { parseGpx, resample, terrainSlopes, stats, wildlifeZonesOnRoute, drawProfile } from './gpx.js';
 
 const $ = (id) => document.getElementById(id);
@@ -166,7 +169,80 @@ function updateSun() {
   const shadows = lightOn && $('sun-shadows').checked && Number($('sun-el').value) > 0;
   viewer.shadows = shadows;
   viewer.terrainShadows = shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+  scheduleShade();
 }
+
+// ---------- sun & shade map ----------
+const shadeState = { grid: null, map: null, layer: null, busy: false, again: false, last: null };
+
+function shadeSun() {
+  const g = shadeState.grid;
+  if (sunMode === 'time') {
+    const pos = sunPosition(selectedDate(), g.lon, g.lat);
+    return { az: gridAzimuth(pos.azimuth, g.lon, g.lat), el: pos.elevation, trueAz: pos.azimuth };
+  }
+  const az = Number($('sun-az').value);
+  return { az: gridAzimuth(az, g.lon, g.lat), el: Number($('sun-el').value), trueAz: az };
+}
+
+async function paintShade() {
+  if (!shadeState.grid) return;
+  if (shadeState.busy) { shadeState.again = true; return; }
+  shadeState.busy = true;
+  try {
+    do {
+      shadeState.again = false;
+      const s = shadeSun();
+      const shade = computeShade(shadeState.grid, s.az, s.el);
+      shadeState.last = shade;
+      const out = renderShade(shadeState.map, shade);
+      const m = shadeState.map;
+      const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/png'), {
+        rectangle: Cesium.Rectangle.fromDegrees(m.west, m.south, m.east, m.north),
+      });
+      if (!shadeState.grid) break; // cleared meanwhile
+      const layer = viewer.imageryLayers.addImageryProvider(provider);
+      if (shadeState.layer) viewer.imageryLayers.remove(shadeState.layer, true);
+      shadeState.layer = layer;
+      text($('shade-status'), s.el > 0
+        ? `Sun ${Math.round(s.trueAz)}° ${compass(s.trueAz)}, ${s.el.toFixed(1)}° high · ${Math.round(out.sunlit * 100)} % of the square in sun. Dark = shade.`
+        : 'Sun below the horizon: everything in shade.');
+    } while (shadeState.again);
+  } finally {
+    shadeState.busy = false;
+  }
+}
+
+let shadeFrame = 0;
+function scheduleShade() {
+  if (!shadeState.grid || shadeFrame) return;
+  shadeFrame = requestAnimationFrame(() => { shadeFrame = 0; paintShade(); });
+}
+
+$('shade-run').onclick = async () => {
+  const c = viewCenter();
+  if (!c) { text($('shade-status'), 'Point the view at the terrain first.'); return; }
+  $('shade-run').disabled = true;
+  try {
+    text($('shade-status'), 'Searching elevation tiles…');
+    const t0 = performance.now();
+    const grid = await loadDem(c[0], c[1], SHADE_CORE_M + 2 * SHADE_MARGIN_M,
+      (d, n) => text($('shade-status'), `Loading elevation tiles ${d}/${n}…`), SHADE_CELL_M, 16);
+    shadeState.grid = { ...grid, lon: c[0], lat: c[1] };
+    shadeState.map = buildPixelMap(grid, c[0], c[1]);
+    shadeState.loadMs = performance.now() - t0;
+    await paintShade();
+  } catch (err) {
+    text($('shade-status'), `Shade map failed: ${err.message}`);
+  } finally {
+    $('shade-run').disabled = false;
+  }
+};
+$('shade-clear').onclick = () => {
+  if (shadeState.layer) viewer.imageryLayers.remove(shadeState.layer, true);
+  Object.assign(shadeState, { grid: null, map: null, layer: null, last: null });
+  text($('shade-status'), '');
+};
 
 for (const b of $('sun-mode').children) {
   b.onclick = () => {
@@ -304,7 +380,7 @@ $('slope-run').onclick = async () => {
   $('slope-run').disabled = true;
   try {
     text($('slope-status'), 'Searching elevation tiles…');
-    const grid = await loadDem(c[0], c[1], ANALYSIS_SIZE_M, (d, n) => text($('slope-status'), `Loading elevation tiles ${d}/${n}…`));
+    const grid = await loadDem(c[0], c[1], ANALYSIS_SIZE_M, (d, n) => text($('slope-status'), `Loading elevation tiles ${d}/${n}…`), undefined, 16);
     text($('slope-status'), 'Computing slope and aspect…');
     await new Promise((r) => setTimeout(r, 20));
     const g = computeSlopeAspect(grid);
@@ -506,6 +582,11 @@ clickHandler.setInputAction(async (ev) => {
   if (state.slopeGrid) {
     const s = sampleGrid(state.slopeGrid, lon, lat);
     if (s && Number.isFinite(s.slope)) headText += ` · ${Math.round(s.slope)}° ${compass(s.aspect)}`;
+  }
+  if (shadeState.last) {
+    const v = shadeAt(shadeState.grid, shadeState.last, lon, lat);
+    const label = { [CAST]: 'in terrain shadow', [AWAY]: 'faces away from the sun', [NIGHT]: 'sun down' }[v];
+    if (v !== null) headText += ` · ${label || 'in sun'}`;
   }
   head.textContent = headText;
   info.append(head);
