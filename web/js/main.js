@@ -1,7 +1,7 @@
 // Ski Bum's Delight — wiring of viewer, layers and panels.
 import {
   AREA, HOME_VIEW, TERRAIN_URL, BASEMAPS, OVERLAYS, IDENTIFY_LAYERS, IDENTIFY_URL,
-  ANALYSIS_SIZE_M, wmtsUrl,
+  ANALYSIS_SIZE_M, wmtsUrl, SWISSIMAGE_YEARS,
 } from './config.js';
 import { fetchBulletin, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, PROBLEMS } from './bulletin.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
@@ -40,9 +40,9 @@ function flyHome(duration = 0) {
 }
 flyHome();
 
-function wmtsProvider(def) {
+function wmtsProvider(def, time) {
   return new Cesium.UrlTemplateImageryProvider({
-    url: wmtsUrl(def.layer, def.ext),
+    url: wmtsUrl(def.layer, def.ext, time),
     maximumLevel: def.maxLevel,
     rectangle: Cesium.Rectangle.fromDegrees(5.9, 45.8, 10.5, 47.85), // Switzerland; tiles outside return 400
     credit: new Cesium.Credit(def.layer.startsWith('ch.bafu') ? 'BAFU' : '© swisstopo'),
@@ -51,14 +51,26 @@ function wmtsProvider(def) {
 
 // ---------- base maps ----------
 let baseLayer = null;
+let basemapId = 'winter';
 function setBasemap(id) {
-  const def = BASEMAPS.find((b) => b.id === id);
-  const layer = new Cesium.ImageryLayer(wmtsProvider(def));
+  basemapId = id;
+  let def = BASEMAPS.find((b) => b.id === id);
+  let time;
+  const year = $('image-year').value;
+  if (id === 'image' && year !== 'current') {
+    def = { ...def, layer: 'ch.swisstopo.swissimage-product' };
+    time = year;
+  }
+  const layer = new Cesium.ImageryLayer(wmtsProvider(def, time));
   if (baseLayer) viewer.imageryLayers.remove(baseLayer, true);
   viewer.imageryLayers.add(layer, 0);
   baseLayer = layer;
   for (const b of $('basemaps').children) b.classList.toggle('on', b.dataset.id === id);
+  $('image-year-row').hidden = id !== 'image';
 }
+$('image-year').append(new Option('Latest (10 cm)', 'current'));
+for (const y of SWISSIMAGE_YEARS) $('image-year').append(new Option(y, y));
+$('image-year').onchange = () => setBasemap('image');
 for (const b of BASEMAPS) {
   const btn = document.createElement('button');
   btn.textContent = b.label;
@@ -347,7 +359,7 @@ $('s2-load').onclick = async () => {
   $('s2-load').disabled = true;
   text($('s2-status'), 'Loading 10 m true colour for the area…');
   try {
-    const out = await loadScene(s, AREA);
+    const out = await loadScene(s, AREA, { maskClouds: $('s2-mask').checked });
     if (state.s2Layer) viewer.imageryLayers.remove(state.s2Layer, true);
     const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/jpeg', 0.9), {
       rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
@@ -355,7 +367,10 @@ $('s2-load').onclick = async () => {
     });
     state.s2Layer = viewer.imageryLayers.addImageryProvider(provider, 1);
     state.s2Layer.alpha = Number($('s2-alpha').value) / 100;
-    text($('s2-status'), `Showing ${s.id}. Clouds look like snow — compare with the national map.`);
+    const maskNote = out.maskApplied
+      ? `${Math.round(out.masked * 100)} % hidden as cloud or cloud shadow (the classifier can mistake snow for cloud).`
+      : 'Clouds look like snow — compare with the national map.';
+    text($('s2-status'), `Showing ${new Date(s.date).toLocaleDateString('en-GB')}. ${maskNote}`);
   } catch (err) {
     text($('s2-status'), `Could not load scene: ${err.message}`);
   } finally {

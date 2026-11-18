@@ -67,6 +67,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".mjs": "text/javascript",
     }
 
+    def end_headers(self):
+        # Always revalidate: otherwise browsers mix cached and new ES modules after an update.
+        if not self.path.startswith("/proxy/"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def do_GET(self):
         if self.path.startswith("/proxy/"):
             self.handle_proxy()

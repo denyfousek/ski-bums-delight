@@ -22,6 +22,8 @@
     <section>
       <h2>Base map</h2>
       <div id="basemaps" class="seg"></div>
+      <label class="row small" id="image-year-row" hidden>Aerial year <select id="image-year"></select></label>
+      <p class="muted small">Aerial images are summer flights; for current snow use Sentinel-2 below.</p>
     </section>
 
     <section>
@@ -47,7 +49,7 @@
         </div>
         <label class="slider">Time of day <output id="time-out"></output>
           <input type="range" id="sun-time" min="0" max="1439" step="5" value="720"></label>
-        <label class="row small"><input type="checkbox" id="sun-shadows" checked> Cast shadows (sun &amp; shade)</label>
+        <label class="row small"><input type="checkbox" id="sun-shadows"> Cast shadows (approximate: only terrain in view casts)</label>
         <div id="sun-info" class="muted small"></div>
       </div>
       <label class="slider">Sun azimuth <output id="az-out"></output>
@@ -92,6 +94,7 @@
         <select id="s2-scenes"><option>Searching…</option></select>
         <button id="s2-load">Show</button>
       </div>
+      <label class="row small"><input type="checkbox" id="s2-mask" checked> Hide clouds and cloud shadows</label>
       <label class="slider">Opacity <input type="range" id="s2-alpha" min="0" max="100" value="100"></label>
       <div id="s2-status" class="muted small"></div>
     </section>

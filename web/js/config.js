@@ -10,10 +10,14 @@ export const HOME_VIEW = { lon: 8.575, lat: 46.515, height: 6800, heading: 0, pi
 
 export const TERRAIN_URL = 'https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/';
 
-const WMTS = 'https://wmts.geo.admin.ch/1.0.0/{layer}/default/current/3857/{z}/{x}/{y}.{ext}';
-export function wmtsUrl(layer, ext) {
-  return WMTS.replace('{layer}', layer).replace('{ext}', ext);
+const WMTS = 'https://wmts.geo.admin.ch/1.0.0/{layer}/default/{time}/3857/{z}/{x}/{y}.{ext}';
+export function wmtsUrl(layer, ext, time = 'current') {
+  return WMTS.replace('{layer}', layer).replace('{ext}', ext).replace('{time}', time);
 }
+
+// SWISSIMAGE year mosaics (ch.swisstopo.swissimage-product), all summer flights.
+// Not every year covers every region; missing areas stay empty.
+export const SWISSIMAGE_YEARS = Array.from({ length: 2025 - 1947 + 1 }, (_, i) => String(2025 - i));
 
 export const BASEMAPS = [
   { id: 'winter', label: 'National map (winter)', layer: 'ch.swisstopo.pixelkarte-farbe-winter', ext: 'jpeg', maxLevel: 18 },

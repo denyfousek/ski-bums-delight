@@ -28,11 +28,17 @@ export async function searchScenes(box, days = 21) {
       cloud: f.properties['eo:cloud_cover'],
       epsg: f.properties['proj:epsg'] || Number(String(f.properties['proj:code'] || '').split(':')[1]),
       href: f.assets.visual.href,
+      sclHref: f.assets.scl ? f.assets.scl.href : null,
     }));
 }
 
-// Returns { canvas, west, south, east, north } for the box, or throws.
-export async function loadScene(scene, box, maxPx = 2400) {
+// ESA L2A scene classification (SCL): 0 no data, 1 defective, 3 cloud shadow,
+// 8/9 cloud medium/high probability, 10 thin cirrus. 11 = snow/ice is kept.
+// In winter SCL sometimes calls snow "cloud", so masking can cut real snow.
+const CLOUD_CLASSES = new Set([0, 1, 3, 8, 9, 10]);
+
+// Returns { canvas, west, south, east, north, masked } for the box, or throws.
+export async function loadScene(scene, box, { maskClouds = false, maxPx = 2400 } = {}) {
   const epsg = scene.epsg;
   if (!(epsg >= 32601 && epsg <= 32660)) throw new Error(`Unsupported projection EPSG:${epsg}`);
   const zone = epsg - 32600;
@@ -51,6 +57,13 @@ export async function loadScene(scene, box, maxPx = 2400) {
   const { fromUrl } = await import(GEOLIB.geotiff);
   const tiff = await fromUrl(scene.href);
   const rgb = await tiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true });
+  let scl = null;
+  if (maskClouds && scene.sclHref) {
+    const sclTiff = await fromUrl(scene.sclHref);
+    scl = await sclTiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true, resampleMethod: 'nearest' });
+  }
+  let masked = 0;
+  let valid = 0;
 
   const W = w;
   const H = Math.round(w * (box.north - box.south) / (box.east - box.west) / Math.cos(((box.north + box.south) / 2) * Math.PI / 180));
@@ -71,9 +84,11 @@ export async function loadScene(scene, box, maxPx = 2400) {
       const k = (r * w + c) * 3;
       const o = (j * W + i) * 4;
       if (rgb[k] === 0 && rgb[k + 1] === 0 && rgb[k + 2] === 0) continue; // no data
+      valid++;
+      if (scl && CLOUD_CLASSES.has(scl[r * w + c])) { masked++; continue; }
       px[o] = rgb[k]; px[o + 1] = rgb[k + 1]; px[o + 2] = rgb[k + 2]; px[o + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
-  return { canvas, ...box };
+  return { canvas, ...box, masked: valid ? masked / valid : 0, maskApplied: Boolean(scl) };
 }
