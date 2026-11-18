@@ -27,6 +27,7 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 | 3D view | swisstopo terrain, winter/summer national map or SWISSIMAGE | geo.admin.ch |
 | Layers | slope ≥ 30°, ski and snowshoe routes, lifts, wildlife rest zones and protection areas | swisstopo, BAFU |
 | Terrain shading | real sun for a date and time (or manual azimuth/elevation) | — |
+| Closed forest | slope cells in swissTLM3D "forest" (vector tiles, z14) shown separately as protected; open forest and scrub do not count. Assumption, no source: dense forest rarely releases avalanches | swisstopo |
 | Sun & shade map | exact terrain shadows on swissALTI3D (8 m), 8 × 8 km plus 4 km margin, follows the time slider | swisstopo |
 | Avalanche bulletin | danger level, problems, aspects and elevations for the area or any clicked point; optional danger map | SLF (CC BY 4.0) |
 | Critical slopes | slope + aspect from swissALTI3D (4 m) for an 8 × 8 km square; marks ≥ 30° slopes whose aspect and elevation the bulletin names | swisstopo, SLF |

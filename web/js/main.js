@@ -5,6 +5,7 @@ import {
 } from './config.js';
 import { fetchBulletin, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, PROBLEMS } from './bulletin.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
+import { loadForestMask } from './forest.js';
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
 import { fetchWind, renderWind } from './weather.js';
 import { searchScenes, loadScene } from './sentinel.js';
@@ -324,6 +325,7 @@ for (const b of $('slope-mode').children) {
     if (state.slopeGrid) paintSlope();
   };
 }
+$('slope-forest').onchange = () => { if (state.slopeGrid) paintSlope(); };
 
 function viewCenter() {
   const canvas = viewer.scene.canvas;
@@ -358,17 +360,23 @@ async function paintSlope() {
     text($('slope-status'), 'No bulletin for this point — showing slope classes instead.');
   }
   const mode = slopeMode === 'critical' && b ? 'critical' : 'classes';
-  const out = renderOverlay(g, mode, rules);
+  const forestOn = $('slope-forest').checked && Boolean(g.forest);
+  const out = renderOverlay(g, mode, rules, forestOn);
   if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
   const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/png'), {
     rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
   });
   state.slopeLayer = viewer.imageryLayers.addImageryProvider(provider);
   if (mode === 'critical') {
-    legend([['rgba(200,16,46,.75)', 'critical ≥ 30°'], ['rgba(90,90,90,.35)', '≥ 30°, not named in bulletin']]);
+    const items = [['rgba(200,16,46,.75)', 'critical ≥ 30°'], ['rgba(90,90,90,.35)', '≥ 30°, not named in bulletin']];
+    if (forestOn) items.splice(1, 0, ['rgba(30,120,60,.6)', 'would be critical, but in closed forest']);
+    legend(items);
     const names = rules.map((r) => PROBLEMS[r.type] || r.type).join(', ') || 'no aspect-specific problem';
-    const share = out.steep ? Math.round((out.critical / out.steep) * 100) : 0;
-    text($('slope-status'), `Rules from bulletin: ${names}. ${share} % of the slopes ≥ 30° in this square match.`);
+    const pct = (n) => (out.steep ? Math.round((n / out.steep) * 100) : 0);
+    let msg = `Rules from bulletin: ${names}. ${pct(out.critical)} % of the slopes ≥ 30° in this square match.`;
+    if (forestOn) msg += ` Another ${pct(out.forested)} % match but lie in closed forest.`;
+    if (g.forestError) msg += ` Forest data unavailable (${g.forestError}).`;
+    text($('slope-status'), msg);
   } else {
     legend([['#f5d400', '30–35°'], ['#f08a00', '35–40°'], ['#d7191c', '40–45°'], ['#8e2bb0', '≥ 45°']]);
   }
@@ -384,6 +392,11 @@ $('slope-run').onclick = async () => {
     text($('slope-status'), 'Computing slope and aspect…');
     await new Promise((r) => setTimeout(r, 20));
     const g = computeSlopeAspect(grid);
+    try {
+      g.forest = await loadForestMask(g, (d, n) => text($('slope-status'), `Loading forest ${d}/${n}…`));
+    } catch (err) {
+      g.forestError = err.message; // analysis still works, just without forest
+    }
     const e1 = g.e0 + g.cols * g.cell;
     const nB = g.nTop - g.rows * g.cell;
     const { lv95ToWgs } = await import('./proj.js');
@@ -581,7 +594,7 @@ clickHandler.setInputAction(async (ev) => {
   let headText = `${lat.toFixed(5)}, ${lon.toFixed(5)} · ${h ? Math.round(h) : '?'} m`;
   if (state.slopeGrid) {
     const s = sampleGrid(state.slopeGrid, lon, lat);
-    if (s && Number.isFinite(s.slope)) headText += ` · ${Math.round(s.slope)}° ${compass(s.aspect)}`;
+    if (s && Number.isFinite(s.slope)) headText += ` · ${Math.round(s.slope)}° ${compass(s.aspect)}${s.forest ? ' · closed forest' : ''}`;
   }
   if (shadeState.last) {
     const v = shadeAt(shadeState.grid, shadeState.last, lon, lat);

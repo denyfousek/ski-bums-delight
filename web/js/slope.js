@@ -149,7 +149,7 @@ export function sampleGrid(g, lon, lat) {
   const r = Math.round((g.nTop - N) / g.cell - 0.5);
   if (c < 0 || r < 0 || c >= g.cols || r >= g.rows) return null;
   const k = r * g.cols + c;
-  return { elevation: g.z[k], slope: g.slope[k], aspect: g.aspect[k] };
+  return { elevation: g.z[k], slope: g.slope[k], aspect: g.aspect[k], forest: g.forest ? g.forest[k] === 1 : false };
 }
 
 const CLASS_COLORS = [
@@ -175,7 +175,8 @@ export function isCritical(cell, rules) {
 
 // Paints the analysis into a WGS84-aligned canvas and returns it with its rectangle.
 // mode: 'classes' | 'critical'. rules: from bulletin.criticalRules().
-export function renderOverlay(g, mode, rules) {
+// forestProtects: critical cells inside closed forest are shown and counted separately.
+export function renderOverlay(g, mode, rules, forestProtects = false) {
   const e1 = g.e0 + g.cols * g.cell;
   const nBottom = g.nTop - g.rows * g.cell;
   const corners = [lv95ToWgs(g.e0, g.nTop), lv95ToWgs(e1, g.nTop), lv95ToWgs(g.e0, nBottom), lv95ToWgs(e1, nBottom)];
@@ -193,6 +194,7 @@ export function renderOverlay(g, mode, rules) {
   const img = ctx.createImageData(W, H);
   const px = img.data;
   let critical = 0;
+  let forested = 0;
   let steep = 0;
   for (let j = 0; j < H; j++) {
     const lat = north - ((j + 0.5) / H) * (north - south);
@@ -203,7 +205,10 @@ export function renderOverlay(g, mode, rules) {
       steep++;
       const o = (j * W + i) * 4;
       if (mode === 'critical') {
-        if (isCritical(cell, rules)) {
+        if (isCritical(cell, rules) && forestProtects && cell.forest) {
+          forested++;
+          px[o] = 30; px[o + 1] = 120; px[o + 2] = 60; px[o + 3] = 150;
+        } else if (isCritical(cell, rules)) {
           critical++;
           px[o] = 200; px[o + 1] = 16; px[o + 2] = 46; px[o + 3] = 190;
         } else {
@@ -216,5 +221,5 @@ export function renderOverlay(g, mode, rules) {
     }
   }
   ctx.putImageData(img, 0, 0);
-  return { canvas, west, south, east, north, critical, steep, total: W * H };
+  return { canvas, west, south, east, north, critical, forested, steep, total: W * H };
 }

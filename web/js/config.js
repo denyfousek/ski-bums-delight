@@ -60,6 +60,11 @@ export const ANALYSIS_CELL_M = 4;
 // the treeline in the central Swiss Alps lies roughly at 2000 m.
 export const TREELINE_M = 2000;
 
+// swissTLM3D land cover (layer "landcover") in the geo.admin base vector tiles, CORS open.
+export const FOREST_TILES_URL = 'https://vectortiles{s}.geo.admin.ch/tiles/ch.swisstopo.base.vt/v1.0.0/{z}/{x}/{y}.pbf';
+
 export const GEOLIB = {
   geotiff: 'https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm',
+  vectorTile: 'https://cdn.jsdelivr.net/npm/@mapbox/vector-tile@2.0.3/+esm',
+  pbf: 'https://cdn.jsdelivr.net/npm/pbf@4.0.1/+esm',
 };
