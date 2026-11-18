@@ -8,6 +8,7 @@ import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
 import { fetchWind, renderWind } from './weather.js';
 import { searchScenes, loadScene } from './sentinel.js';
+import { sunPosition, sunTimes } from './sun.js';
 import { parseGpx, resample, terrainSlopes, stats, wildlifeZonesOnRoute, drawProfile } from './gpx.js';
 
 const $ = (id) => document.getElementById(id);
@@ -85,28 +86,93 @@ for (const o of OVERLAYS) {
 }
 
 // ---------- terrain shading (sun) ----------
-const areaCenter = Cesium.Cartesian3.fromDegrees((AREA.west + AREA.east) / 2, (AREA.south + AREA.north) / 2, 2000);
-const enu = Cesium.Transforms.eastNorthUpToFixedFrame(areaCenter);
-const E = Cesium.Matrix4.getColumn(enu, 0, new Cesium.Cartesian4());
-const N = Cesium.Matrix4.getColumn(enu, 1, new Cesium.Cartesian4());
-const U = Cesium.Matrix4.getColumn(enu, 2, new Cesium.Cartesian4());
-function updateSun() {
+// Two modes: "time" puts the real sun for a date and time (Cesium SunLight, so cast shadows
+// match the sky); "manual" sets azimuth/elevation freely for relief reading.
+let sunMode = 'time';
+viewer.clock.shouldAnimate = false;
+viewer.shadowMap.maximumDistance = 20000;
+viewer.shadowMap.softShadows = true;
+viewer.shadowMap.darkness = 0.45;
+
+function sunPlace() {
+  const c = viewCenter();
+  return c || [(AREA.west + AREA.east) / 2, (AREA.south + AREA.north) / 2];
+}
+
+function selectedDate() {
+  const [y, m, d] = $('sun-date').value.split('-').map(Number);
+  const mins = Number($('sun-time').value);
+  return new Date(y, m - 1, d, Math.floor(mins / 60), mins % 60);
+}
+
+function setDateInputs(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  $('sun-date').value = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  $('sun-time').value = String(Math.round((date.getHours() * 60 + date.getMinutes()) / 5) * 5);
+}
+
+function directionalFromSliders(lon, lat) {
   const az = Cesium.Math.toRadians(Number($('sun-az').value));
   const el = Cesium.Math.toRadians(Number($('sun-el').value));
+  const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(lon, lat, 2000));
+  const E = Cesium.Matrix4.getColumn(enu, 0, new Cesium.Cartesian4());
+  const N = Cesium.Matrix4.getColumn(enu, 1, new Cesium.Cartesian4());
+  const U = Cesium.Matrix4.getColumn(enu, 2, new Cesium.Cartesian4());
+  const a = Math.cos(el) * Math.sin(az);
+  const b = Math.cos(el) * Math.cos(az);
+  const u = Math.sin(el);
+  const toSun = new Cesium.Cartesian3(a * E.x + b * N.x + u * U.x, a * E.y + b * N.y + u * U.y, a * E.z + b * N.z + u * U.z);
+  return Cesium.Cartesian3.negate(Cesium.Cartesian3.normalize(toSun, toSun), new Cesium.Cartesian3());
+}
+
+function updateSun() {
+  const [lon, lat] = sunPlace();
+  const lightOn = $('light-toggle').checked;
+  const timeMode = sunMode === 'time';
+  $('sun-time-controls').hidden = !timeMode;
+  $('sun-az').disabled = timeMode;
+  $('sun-el').disabled = timeMode;
+
+  if (timeMode) {
+    const date = selectedDate();
+    const pos = sunPosition(date, lon, lat);
+    $('sun-az').value = String(Math.round(pos.azimuth));
+    $('sun-el').value = String(Math.round(pos.elevation));
+    text($('time-out'), date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+    const { rise, set } = sunTimes(date, lon, lat);
+    const hm = (d) => (d ? d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '–');
+    text($('sun-info'), `${pos.elevation < 0 ? 'Sun below the horizon. ' : ''}Sunrise ${hm(rise)} · sunset ${hm(set)} (flat horizon, local time). Mountains shade earlier and longer.`);
+    viewer.clock.currentTime = Cesium.JulianDate.fromDate(date);
+    viewer.scene.light = new Cesium.SunLight({ intensity: 2.2 });
+  } else {
+    viewer.scene.light = new Cesium.DirectionalLight({ direction: directionalFromSliders(lon, lat), intensity: 2.2 });
+  }
   text($('az-out'), `${$('sun-az').value}° ${compass(Number($('sun-az').value))}`);
   text($('el-out'), `${$('sun-el').value}°`);
-  const toSun = new Cesium.Cartesian3(
-    Math.cos(el) * Math.sin(az) * E.x + Math.cos(el) * Math.cos(az) * N.x + Math.sin(el) * U.x,
-    Math.cos(el) * Math.sin(az) * E.y + Math.cos(el) * Math.cos(az) * N.y + Math.sin(el) * U.y,
-    Math.cos(el) * Math.sin(az) * E.z + Math.cos(el) * Math.cos(az) * N.z + Math.sin(el) * U.z,
-  );
-  const dir = Cesium.Cartesian3.negate(Cesium.Cartesian3.normalize(toSun, toSun), new Cesium.Cartesian3());
-  viewer.scene.light = new Cesium.DirectionalLight({ direction: dir, intensity: 2.2 });
-  viewer.scene.globe.enableLighting = $('light-toggle').checked;
+  viewer.scene.globe.enableLighting = lightOn;
   viewer.scene.globe.dynamicAtmosphereLighting = false;
+  const shadows = lightOn && $('sun-shadows').checked && Number($('sun-el').value) > 0;
+  viewer.shadows = shadows;
+  viewer.terrainShadows = shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
 }
-['sun-az', 'sun-el', 'light-toggle'].forEach((id) => $(id).addEventListener('input', updateSun));
+
+for (const b of $('sun-mode').children) {
+  b.onclick = () => {
+    sunMode = b.dataset.mode;
+    for (const x of $('sun-mode').children) x.classList.toggle('on', x === b);
+    updateSun();
+  };
+}
+$('sun-now').onclick = () => {
+  setDateInputs(new Date());
+  if (sunMode !== 'time') $('sun-mode').querySelector('[data-mode=time]').click();
+  else updateSun();
+};
+['sun-az', 'sun-el', 'light-toggle', 'sun-date', 'sun-time', 'sun-shadows'].forEach((id) => $(id).addEventListener('input', updateSun));
+setDateInputs(new Date());
 updateSun();
+// Moving the camera far changes the place the sun is computed for; refresh after each move.
+viewer.camera.moveEnd.addEventListener(() => updateSun());
 
 // ---------- bulletin ----------
 const areaLon = (AREA.west + AREA.east) / 2;

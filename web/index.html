@@ -36,10 +36,24 @@
         <h2>Terrain shading</h2>
         <label class="switch"><input type="checkbox" id="light-toggle" checked><span></span></label>
       </div>
+      <div class="seg" id="sun-mode">
+        <button data-mode="time" class="on">Date &amp; time</button>
+        <button data-mode="manual">Manual</button>
+      </div>
+      <div id="sun-time-controls">
+        <div class="row">
+          <input type="date" id="sun-date">
+          <button id="sun-now">Now</button>
+        </div>
+        <label class="slider">Time of day <output id="time-out"></output>
+          <input type="range" id="sun-time" min="0" max="1439" step="5" value="720"></label>
+        <label class="row small"><input type="checkbox" id="sun-shadows" checked> Cast shadows (sun &amp; shade)</label>
+        <div id="sun-info" class="muted small"></div>
+      </div>
       <label class="slider">Sun azimuth <output id="az-out"></output>
         <input type="range" id="sun-az" min="0" max="359" value="135"></label>
       <label class="slider">Sun elevation <output id="el-out"></output>
-        <input type="range" id="sun-el" min="5" max="70" value="25"></label>
+        <input type="range" id="sun-el" min="-10" max="70" value="25"></label>
     </section>
 
     <section>

@@ -40,7 +40,9 @@ button, select {
   font: inherit; font-size: 13px; padding: 5px 10px; border-radius: 6px;
   border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer;
 }
-select { flex: 1; min-width: 0; }
+select, input[type=date] { flex: 1; min-width: 0; }
+input[type=date] { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); color-scheme: light dark; }
+input[type=range]:disabled { opacity: .45; }
 button.primary, .seg button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: wait; }
 .seg { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
