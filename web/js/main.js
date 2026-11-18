@@ -1,0 +1,467 @@
+// Ski Bum's Delight — wiring of viewer, layers and panels.
+import {
+  AREA, HOME_VIEW, TERRAIN_URL, BASEMAPS, OVERLAYS, IDENTIFY_LAYERS, IDENTIFY_URL,
+  ANALYSIS_SIZE_M, wmtsUrl,
+} from './config.js';
+import { fetchBulletin, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, PROBLEMS } from './bulletin.js';
+import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
+import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
+import { fetchWind, renderWind } from './weather.js';
+import { searchScenes, loadScene } from './sentinel.js';
+import { parseGpx, resample, terrainSlopes, stats, wildlifeZonesOnRoute, drawProfile } from './gpx.js';
+
+const $ = (id) => document.getElementById(id);
+const state = { bulletin: null, bulletinDs: null, slopeLayer: null, slopeGrid: null, s2Layer: null, gpx: null, stationsDs: null };
+
+function text(el, s) { el.textContent = s; }
+
+// ---------- viewer ----------
+const terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(TERRAIN_URL, { requestVertexNormals: true });
+const viewer = new Cesium.Viewer('globe', {
+  baseLayer: false,
+  terrainProvider,
+  baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+  navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
+  infoBox: false, selectionIndicator: false,
+});
+viewer.scene.globe.depthTestAgainstTerrain = true;
+viewer.scene.globe.maximumScreenSpaceError = 1.5;
+viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#e9e4d6');
+viewer.creditDisplay.addStaticCredit(new Cesium.Credit('© swisstopo', true));
+text($('area-name'), `Test area: ${AREA.name}`);
+
+function flyHome(duration = 0) {
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(HOME_VIEW.lon, HOME_VIEW.lat, HOME_VIEW.height),
+    orientation: { heading: Cesium.Math.toRadians(HOME_VIEW.heading), pitch: Cesium.Math.toRadians(HOME_VIEW.pitch), roll: 0 },
+    duration,
+  });
+}
+flyHome();
+
+function wmtsProvider(def) {
+  return new Cesium.UrlTemplateImageryProvider({
+    url: wmtsUrl(def.layer, def.ext),
+    maximumLevel: def.maxLevel,
+    rectangle: Cesium.Rectangle.fromDegrees(5.9, 45.8, 10.5, 47.85), // Switzerland; tiles outside return 400
+    credit: new Cesium.Credit(def.layer.startsWith('ch.bafu') ? 'BAFU' : '© swisstopo'),
+  });
+}
+
+// ---------- base maps ----------
+let baseLayer = null;
+function setBasemap(id) {
+  const def = BASEMAPS.find((b) => b.id === id);
+  const layer = new Cesium.ImageryLayer(wmtsProvider(def));
+  if (baseLayer) viewer.imageryLayers.remove(baseLayer, true);
+  viewer.imageryLayers.add(layer, 0);
+  baseLayer = layer;
+  for (const b of $('basemaps').children) b.classList.toggle('on', b.dataset.id === id);
+}
+for (const b of BASEMAPS) {
+  const btn = document.createElement('button');
+  btn.textContent = b.label;
+  btn.dataset.id = b.id;
+  btn.onclick = () => setBasemap(b.id);
+  $('basemaps').append(btn);
+}
+setBasemap('winter');
+
+// ---------- overlays ----------
+const overlayLayers = {};
+for (const o of OVERLAYS) {
+  const layer = viewer.imageryLayers.addImageryProvider(wmtsProvider(o));
+  layer.alpha = o.alpha;
+  layer.show = o.on;
+  overlayLayers[o.id] = layer;
+  const label = document.createElement('label');
+  label.className = 'row';
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = o.on;
+  cb.onchange = () => { layer.show = cb.checked; };
+  label.append(cb, document.createTextNode(` ${o.label}`));
+  $('overlays').append(label);
+}
+
+// ---------- terrain shading (sun) ----------
+const areaCenter = Cesium.Cartesian3.fromDegrees((AREA.west + AREA.east) / 2, (AREA.south + AREA.north) / 2, 2000);
+const enu = Cesium.Transforms.eastNorthUpToFixedFrame(areaCenter);
+const E = Cesium.Matrix4.getColumn(enu, 0, new Cesium.Cartesian4());
+const N = Cesium.Matrix4.getColumn(enu, 1, new Cesium.Cartesian4());
+const U = Cesium.Matrix4.getColumn(enu, 2, new Cesium.Cartesian4());
+function updateSun() {
+  const az = Cesium.Math.toRadians(Number($('sun-az').value));
+  const el = Cesium.Math.toRadians(Number($('sun-el').value));
+  text($('az-out'), `${$('sun-az').value}° ${compass(Number($('sun-az').value))}`);
+  text($('el-out'), `${$('sun-el').value}°`);
+  const toSun = new Cesium.Cartesian3(
+    Math.cos(el) * Math.sin(az) * E.x + Math.cos(el) * Math.cos(az) * N.x + Math.sin(el) * U.x,
+    Math.cos(el) * Math.sin(az) * E.y + Math.cos(el) * Math.cos(az) * N.y + Math.sin(el) * U.y,
+    Math.cos(el) * Math.sin(az) * E.z + Math.cos(el) * Math.cos(az) * N.z + Math.sin(el) * U.z,
+  );
+  const dir = Cesium.Cartesian3.negate(Cesium.Cartesian3.normalize(toSun, toSun), new Cesium.Cartesian3());
+  viewer.scene.light = new Cesium.DirectionalLight({ direction: dir, intensity: 2.2 });
+  viewer.scene.globe.enableLighting = $('light-toggle').checked;
+  viewer.scene.globe.dynamicAtmosphereLighting = false;
+}
+['sun-az', 'sun-el', 'light-toggle'].forEach((id) => $(id).addEventListener('input', updateSun));
+updateSun();
+
+// ---------- bulletin ----------
+const areaLon = (AREA.west + AREA.east) / 2;
+const areaLat = (AREA.south + AREA.north) / 2;
+async function initBulletin() {
+  try {
+    state.bulletin = await fetchBulletin();
+    renderBulletin($('bulletin'), (bulletinAt(state.bulletin, areaLon, areaLat) || {}).properties || null);
+    state.bulletinDs = await addBulletinLayer(viewer, state.bulletin);
+    state.bulletinDs.show = $('bulletin-toggle').checked;
+  } catch (err) {
+    text($('bulletin'), `Bulletin could not be loaded: ${err.message}`);
+  }
+}
+$('bulletin-toggle').onchange = () => { if (state.bulletinDs) state.bulletinDs.show = $('bulletin-toggle').checked; };
+
+// ---------- stations ----------
+async function initStations() {
+  const [imis, ms] = await Promise.allSettled([fetchImis(AREA), fetchMeteoSwissSnow(AREA)]);
+  const list = [...(imis.status === 'fulfilled' ? imis.value : []), ...(ms.status === 'fulfilled' ? ms.value : [])]
+    .sort((a, b) => b.elevation - a.elevation);
+  const el = $('stations');
+  el.replaceChildren();
+  for (const s of list) {
+    const row = document.createElement('div');
+    row.className = 'station';
+    const b = document.createElement('b');
+    b.textContent = `${s.name} (${Math.round(s.elevation)} m)`;
+    const parts = [];
+    if (s.snowCm !== null) {
+      let t = `snow ${Math.round(s.snowCm)} cm`;
+      if (s.snowChange24h !== null && s.snowChange24h !== undefined && Math.abs(s.snowChange24h) >= 1) {
+        t += ` (${s.snowChange24h > 0 ? '+' : ''}${Math.round(s.snowChange24h)} in 24 h)`;
+      }
+      parts.push(t);
+    }
+    if (s.windKmh !== null && s.windKmh !== undefined) parts.push(`wind ${Math.round(s.windKmh)} km/h ${compass(s.windDir)}, gusts ${Math.round(s.gustKmh)}`);
+    if (s.airC !== null && s.airC !== undefined) parts.push(`${s.airC.toFixed(1)} °C`);
+    const when = s.time ? new Date(s.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+    row.append(b, document.createElement('br'), document.createTextNode(`${parts.join(' · ') || 'no current values'} — ${s.source} ${when}`));
+    el.append(row);
+  }
+  if (imis.status === 'rejected') {
+    const warn = document.createElement('div');
+    warn.className = 'zone';
+    warn.textContent = `SLF stations unavailable: ${imis.reason.message}`;
+    el.prepend(warn);
+  }
+  if (!list.length && imis.status === 'fulfilled') text(el, 'No stations in this area.');
+  state.stationsDs = addStationEntities(viewer, list);
+  state.stationsDs.show = $('stations-toggle').checked;
+}
+$('stations-toggle').onchange = () => { if (state.stationsDs) state.stationsDs.show = $('stations-toggle').checked; };
+
+// ---------- slope analysis ----------
+let slopeMode = 'critical';
+for (const b of $('slope-mode').children) {
+  b.onclick = () => {
+    slopeMode = b.dataset.mode;
+    for (const x of $('slope-mode').children) x.classList.toggle('on', x === b);
+    if (state.slopeGrid) paintSlope();
+  };
+}
+
+function viewCenter() {
+  const canvas = viewer.scene.canvas;
+  const mid = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
+  const ray = viewer.camera.getPickRay(mid);
+  // Terrain pick needs loaded tiles; fall back to the ellipsoid (a few hundred metres off in the Alps).
+  const pos = viewer.scene.globe.pick(ray, viewer.scene) || viewer.camera.pickEllipsoid(mid);
+  if (!pos) return null;
+  const c = Cesium.Cartographic.fromCartesian(pos);
+  return [Cesium.Math.toDegrees(c.longitude), Cesium.Math.toDegrees(c.latitude)];
+}
+
+function legend(items) {
+  const el = $('slope-legend');
+  el.replaceChildren();
+  for (const [color, label] of items) {
+    const s = document.createElement('span');
+    const i = document.createElement('i');
+    i.style.background = color;
+    s.append(i, document.createTextNode(label));
+    el.append(s);
+  }
+}
+
+async function paintSlope() {
+  const g = state.slopeGrid;
+  const cLon = (g.west + g.east) / 2;
+  const cLat = (g.south + g.north) / 2;
+  const b = state.bulletin ? bulletinAt(state.bulletin, cLon, cLat) : null;
+  const rules = b ? criticalRules(b.properties) : [];
+  if (slopeMode === 'critical' && !b) {
+    text($('slope-status'), 'No bulletin for this point — showing slope classes instead.');
+  }
+  const mode = slopeMode === 'critical' && b ? 'critical' : 'classes';
+  const out = renderOverlay(g, mode, rules);
+  if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
+  const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/png'), {
+    rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
+  });
+  state.slopeLayer = viewer.imageryLayers.addImageryProvider(provider);
+  if (mode === 'critical') {
+    legend([['rgba(200,16,46,.75)', 'critical ≥ 30°'], ['rgba(90,90,90,.35)', '≥ 30°, not named in bulletin']]);
+    const names = rules.map((r) => PROBLEMS[r.type] || r.type).join(', ') || 'no aspect-specific problem';
+    const share = out.steep ? Math.round((out.critical / out.steep) * 100) : 0;
+    text($('slope-status'), `Rules from bulletin: ${names}. ${share} % of the slopes ≥ 30° in this square match.`);
+  } else {
+    legend([['#f5d400', '30–35°'], ['#f08a00', '35–40°'], ['#d7191c', '40–45°'], ['#8e2bb0', '≥ 45°']]);
+  }
+}
+
+$('slope-run').onclick = async () => {
+  const c = viewCenter();
+  if (!c) { text($('slope-status'), 'Point the view at the terrain first.'); return; }
+  $('slope-run').disabled = true;
+  try {
+    text($('slope-status'), 'Searching elevation tiles…');
+    const grid = await loadDem(c[0], c[1], ANALYSIS_SIZE_M, (d, n) => text($('slope-status'), `Loading elevation tiles ${d}/${n}…`));
+    text($('slope-status'), 'Computing slope and aspect…');
+    await new Promise((r) => setTimeout(r, 20));
+    const g = computeSlopeAspect(grid);
+    const e1 = g.e0 + g.cols * g.cell;
+    const nB = g.nTop - g.rows * g.cell;
+    const { lv95ToWgs } = await import('./proj.js');
+    const sw = lv95ToWgs(g.e0, nB);
+    const ne = lv95ToWgs(e1, g.nTop);
+    state.slopeGrid = { ...g, west: sw[0], south: sw[1], east: ne[0], north: ne[1] };
+    await paintSlope();
+  } catch (err) {
+    text($('slope-status'), `Analysis failed: ${err.message}`);
+  } finally {
+    $('slope-run').disabled = false;
+  }
+};
+$('slope-clear').onclick = () => {
+  if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
+  state.slopeLayer = null;
+  state.slopeGrid = null;
+  $('slope-legend').replaceChildren();
+  text($('slope-status'), '');
+};
+
+// ---------- Sentinel-2 ----------
+let scenes = [];
+async function initSentinel() {
+  try {
+    scenes = await searchScenes(AREA);
+    const sel = $('s2-scenes');
+    sel.replaceChildren();
+    if (!scenes.length) {
+      sel.append(new Option('No scenes in the last 3 weeks'));
+      return;
+    }
+    // Earth Search may list the same acquisition twice (processing versions); keep the newest per date.
+    const seen = new Set();
+    scenes = scenes.filter((s) => { const k = s.date.slice(0, 10); if (seen.has(k)) return false; seen.add(k); return true; });
+    scenes.forEach((s, i) => {
+      const d = new Date(s.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+      sel.append(new Option(`${d} · ${Math.round(s.cloud)} % cloud (whole tile)`, String(i)));
+    });
+    const clearest = scenes.reduce((best, s, i) => (s.cloud < scenes[best].cloud ? i : best), 0);
+    sel.value = String(clearest);
+  } catch (err) {
+    text($('s2-status'), `Scene search failed: ${err.message}`);
+  }
+}
+$('s2-load').onclick = async () => {
+  const s = scenes[Number($('s2-scenes').value)];
+  if (!s) return;
+  $('s2-load').disabled = true;
+  text($('s2-status'), 'Loading 10 m true colour for the area…');
+  try {
+    const out = await loadScene(s, AREA);
+    if (state.s2Layer) viewer.imageryLayers.remove(state.s2Layer, true);
+    const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/jpeg', 0.9), {
+      rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
+      credit: new Cesium.Credit('Contains modified Copernicus Sentinel data'),
+    });
+    state.s2Layer = viewer.imageryLayers.addImageryProvider(provider, 1);
+    state.s2Layer.alpha = Number($('s2-alpha').value) / 100;
+    text($('s2-status'), `Showing ${s.id}. Clouds look like snow — compare with the national map.`);
+  } catch (err) {
+    text($('s2-status'), `Could not load scene: ${err.message}`);
+  } finally {
+    $('s2-load').disabled = false;
+  }
+};
+$('s2-alpha').oninput = () => { if (state.s2Layer) state.s2Layer.alpha = Number($('s2-alpha').value) / 100; };
+
+// ---------- GPX ----------
+async function loadGpxText(textContent) {
+  const out = $('gpx-stats');
+  out.replaceChildren();
+  $('gpx-zones').replaceChildren();
+  try {
+    const gpx = parseGpx(textContent);
+    text(out, 'Analysing route…');
+    let pts = resample(gpx.points, 20);
+    if (pts.length > 3000) pts = resample(gpx.points, Math.ceil(pts[pts.length - 1].dist / 3000));
+    pts = await terrainSlopes(terrainProvider, pts);
+    pts = pts.map((p) => ({ ...p, z: p.ele != null ? p.ele : p.terrainEle }));
+    if (state.slopeGrid) {
+      pts = pts.map((p) => { const c = sampleGrid(state.slopeGrid, p.lon, p.lat); return c && Number.isFinite(c.slope) ? { ...p, slope: c.slope } : p; });
+    }
+    const st = stats(pts);
+    if (state.gpx) viewer.entities.remove(state.gpx);
+    state.gpx = viewer.entities.add({
+      polyline: {
+        positions: Cesium.Cartesian3.fromDegreesArray(pts.flatMap((p) => [p.lon, p.lat])),
+        width: 4,
+        material: new Cesium.PolylineOutlineMaterialProperty({ color: Cesium.Color.fromCssColorString('#c8102e'), outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5 }),
+        clampToGround: true,
+      },
+    });
+    viewer.flyTo(state.gpx, { duration: 1.2, offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), 0) });
+
+    const dl = document.createElement('dl');
+    dl.className = 'kv';
+    const add = (k, v) => { const dt = document.createElement('dt'); dt.textContent = k; const dd = document.createElement('dd'); dd.textContent = v; dl.append(dt, dd); };
+    add('Route', gpx.name);
+    add('Distance', `${(st.distance / 1000).toFixed(1)} km`);
+    add('Ascent / descent', `${Math.round(st.up)} m / ${Math.round(st.down)} m`);
+    add('Lowest / highest', `${Math.round(st.minZ)} m / ${Math.round(st.maxZ)} m`);
+    add('Terrain ≥ 30°', `${Math.round(st.steepShare * 100)} % of the route (max ${Math.round(st.maxSlope)}°)`);
+    add('Slope source', state.slopeGrid ? 'swissALTI3D where analysed, else 3D terrain' : 'swisstopo 3D terrain (±15 m)');
+    out.replaceChildren(dl);
+
+    $('gpx-profile').hidden = false;
+    drawProfile($('gpx-profile'), pts);
+
+    const zones = await wildlifeZonesOnRoute(pts);
+    const zEl = $('gpx-zones');
+    if (!zones.length) text(zEl, 'No wildlife rest zone or protection area on this route.');
+    for (const z of zones) {
+      const d = document.createElement('div');
+      d.className = 'zone';
+      d.textContent = `⚠ ${z.name}: km ${z.fromKm.toFixed(1)}–${z.toKm.toFixed(1)} · ${z.rule} · ${z.period} · ${z.binding}`;
+      zEl.append(d);
+    }
+  } catch (err) {
+    text(out, `GPX failed: ${err.message}`);
+  }
+}
+const drop = $('gpx-drop');
+drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  const f = e.dataTransfer.files[0];
+  if (f) loadGpxText(await f.text());
+});
+$('gpx-file').onchange = async () => { const f = $('gpx-file').files[0]; if (f) loadGpxText(await f.text()); };
+
+// ---------- click: bulletin region, identify, wind ----------
+async function identifyAt(lon, lat) {
+  const d = 0.0012;
+  const box = [lon - d, lat - d, lon + d, lat + d].join(',');
+  const q = new URLSearchParams({
+    geometryType: 'esriGeometryEnvelope', geometry: box, sr: '4326', imageDisplay: '1000,1000,96',
+    mapExtent: box, tolerance: '0', returnGeometry: 'false', geometryFormat: 'geojson', lang: 'en',
+    layers: `all:${IDENTIFY_LAYERS.join(',')}`,
+  });
+  const res = await fetch(`${IDENTIFY_URL}?${q}`);
+  if (!res.ok) throw new Error(`Identify HTTP ${res.status}`);
+  const seen = new Set();
+  return ((await res.json()).results || []).filter((f) => {
+    const k = `${f.layerBodId}:${f.featureId ?? f.id}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function describe(f) {
+  const p = f.properties || {};
+  switch (f.layerBodId) {
+    case 'ch.swisstopo-karto.skitouren':
+    case 'ch.swisstopo-karto.schneeschuhrouten':
+    {
+      const kind = f.layerBodId.includes('skitouren') ? 'Ski tour' : 'Snowshoe';
+      const bits = [`Difficulty ${p.difficulty_de || p.difficulty_en || '?'}`];
+      if (p.ascent_time_label) bits.push(`ascent ${p.ascent_time_label}`);
+      if (p.ascent_altitude) bits.push(`↑ ${p.ascent_altitude} m`);
+      if (p.descent_altitude) bits.push(`↓ ${p.descent_altitude} m`);
+      return [`${kind}: ${p.target_name || ''} – ${p.name_en || p.name || p.name_de || ''}`, bits.join(' · '), p.url_sac_de || null];
+    }
+    case 'ch.bafu.wrz-wildruhezonen_portal':
+    case 'ch.bafu.wrz-jagdbanngebiete_select':
+      return [`Protected: ${p.wrz_name || p.label || ''}`, `${p.best_de || ''} · ${p.schutzzeit || ''} · ${p.schutzs_de || ''}`, null];
+    case 'ch.bav.seilbahnen-bundeskonzession':
+      return [`Cableway: ${p.anlagename || p.label || ''}`, `Installation ${p.anlagenr || ''}`, null];
+    default:
+      return [p.label || f.layerBodId, '', null];
+  }
+}
+
+const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+clickHandler.setInputAction(async (ev) => {
+  const ray = viewer.camera.getPickRay(ev.position);
+  const pos = viewer.scene.globe.pick(ray, viewer.scene) || viewer.camera.pickEllipsoid(ev.position);
+  if (!pos) return;
+  const c = Cesium.Cartographic.fromCartesian(pos);
+  const lon = Cesium.Math.toDegrees(c.longitude);
+  const lat = Cesium.Math.toDegrees(c.latitude);
+  const info = $('info');
+  info.replaceChildren();
+  const head = document.createElement('div');
+  let h = viewer.scene.globe.getHeight(c);
+  if (!h) {
+    try { [h] = (await Cesium.sampleTerrainMostDetailed(terrainProvider, [Cesium.Cartographic.fromRadians(c.longitude, c.latitude)])).map((x) => x.height); } catch { h = null; }
+  }
+  let headText = `${lat.toFixed(5)}, ${lon.toFixed(5)} · ${h ? Math.round(h) : '?'} m`;
+  if (state.slopeGrid) {
+    const s = sampleGrid(state.slopeGrid, lon, lat);
+    if (s && Number.isFinite(s.slope)) headText += ` · ${Math.round(s.slope)}° ${compass(s.aspect)}`;
+  }
+  head.textContent = headText;
+  info.append(head);
+
+  if (state.bulletin) {
+    const b = bulletinAt(state.bulletin, lon, lat);
+    if (b) renderBulletin($('bulletin'), b.properties);
+  }
+
+  $('wind').textContent = 'Loading forecast…';
+  fetchWind(lon, lat).then((d) => renderWind($('wind'), d)).catch((err) => { $('wind').textContent = `Forecast failed: ${err.message}`; });
+
+  try {
+    const results = await identifyAt(lon, lat);
+    for (const f of results) {
+      const [t, sub, url] = describe(f);
+      const d = document.createElement('div');
+      d.className = 'feature';
+      const b = document.createElement('b');
+      b.textContent = t;
+      d.append(b);
+      if (sub) d.append(document.createElement('br'), document.createTextNode(sub));
+      if (url && /^https:\/\//.test(url)) {
+        const a = document.createElement('a');
+        a.href = url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = ' SAC route page';
+        d.append(document.createElement('br'), a);
+      }
+      info.append(d);
+    }
+    if (!results.length) info.append(document.createTextNode('No route, zone or lift right here.'));
+  } catch (err) {
+    info.append(document.createTextNode(`Lookup failed: ${err.message}`));
+  }
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+// ---------- start ----------
+initBulletin();
+initStations();
+initSentinel();
+window.skiApp = { viewer, state }; // for debugging in the console

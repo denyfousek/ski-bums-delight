@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ski Bum's Delight</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Widgets/widgets.css">
+  <link rel="stylesheet" href="css/app.css">
+  <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/';</script>
+  <script src="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js"></script>
+</head>
+<body>
+  <div id="globe"></div>
+
+  <aside id="panel">
+    <header>
+      <div class="eyebrow">Winter truth · dated snow estimate</div>
+      <h1>Ski Bum's Delight</h1>
+      <div class="muted" id="area-name"></div>
+    </header>
+
+    <section>
+      <h2>Base map</h2>
+      <div id="basemaps" class="seg"></div>
+    </section>
+
+    <section>
+      <h2>Layers</h2>
+      <div id="overlays"></div>
+      <label class="row"><input type="checkbox" id="bulletin-toggle"> Avalanche danger map (SLF)</label>
+      <label class="row"><input type="checkbox" id="stations-toggle" checked> Snow &amp; wind stations</label>
+    </section>
+
+    <section>
+      <div class="row between">
+        <h2>Terrain shading</h2>
+        <label class="switch"><input type="checkbox" id="light-toggle" checked><span></span></label>
+      </div>
+      <label class="slider">Sun azimuth <output id="az-out"></output>
+        <input type="range" id="sun-az" min="0" max="359" value="135"></label>
+      <label class="slider">Sun elevation <output id="el-out"></output>
+        <input type="range" id="sun-el" min="5" max="70" value="25"></label>
+    </section>
+
+    <section>
+      <h2>Avalanche bulletin</h2>
+      <div id="bulletin" class="muted">Loading…</div>
+    </section>
+
+    <section>
+      <h2>Critical slopes</h2>
+      <p class="muted small">Computes slope and aspect from swissALTI3D (4 m) for an 8 × 8 km square around the view centre. “Critical” = ≥ 30° in an aspect and elevation the bulletin names.</p>
+      <div class="seg" id="slope-mode">
+        <button data-mode="critical" class="on">Critical per bulletin</button>
+        <button data-mode="classes">Slope classes</button>
+      </div>
+      <div class="row">
+        <button id="slope-run" class="primary">Analyse view</button>
+        <button id="slope-clear">Clear</button>
+      </div>
+      <div id="slope-status" class="muted small"></div>
+      <div id="slope-legend" class="legend small"></div>
+    </section>
+
+    <section>
+      <h2>Stations</h2>
+      <div id="stations" class="muted small">Loading…</div>
+    </section>
+
+    <section>
+      <h2>Wind forecast</h2>
+      <div id="wind" class="muted small">Click the terrain to get a forecast for that point.</div>
+    </section>
+
+    <section>
+      <h2>Sentinel-2 imagery</h2>
+      <div class="row">
+        <select id="s2-scenes"><option>Searching…</option></select>
+        <button id="s2-load">Show</button>
+      </div>
+      <label class="slider">Opacity <input type="range" id="s2-alpha" min="0" max="100" value="100"></label>
+      <div id="s2-status" class="muted small"></div>
+    </section>
+
+    <section>
+      <h2>GPX route</h2>
+      <label id="gpx-drop" class="drop">Drop a .gpx file here or click to choose
+        <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" hidden></label>
+      <div id="gpx-stats" class="small"></div>
+      <canvas id="gpx-profile" hidden></canvas>
+      <div id="gpx-zones" class="small"></div>
+    </section>
+
+    <section>
+      <h2>Clicked here</h2>
+      <div id="info" class="muted small">Click a route, zone or lift on the map.</div>
+    </section>
+
+    <footer class="small">
+      <p class="warn-box">Planning aid only. It does not replace your own avalanche assessment in the field, the full SLF bulletin, or training.</p>
+      <p class="muted">Data: ©swisstopo · BAFU · BAV · WSL Institute for Snow and Avalanche Research <a href="https://www.slf.ch" target="_blank" rel="noopener">SLF</a> (CC BY 4.0) · MeteoSwiss · Open-Meteo (CC BY 4.0, non-commercial use) · Copernicus Sentinel data, processed via Earth Search.</p>
+    </footer>
+  </aside>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
