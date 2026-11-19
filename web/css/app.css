@@ -1,33 +1,63 @@
 :root {
-  --bg: #f3eedc;
-  --panel: #f6f1e4;
-  --ink: #2b1a1c;
-  --muted: #7a6a62;
-  --accent: #8e2f3a;
+  /* Winter light: snow white, cool slate, alpine red as accent. */
+  --bg: #eef2f6;
+  --panel: #fbfcfd;
+  --panel-2: #f1f4f8;
+  --ink: #18222e;
+  --muted: #5b6878;
+  --accent: #b3202e;
   --accent-ink: #ffffff;
-  --line: #ddd3bd;
+  --line: #d9e0e8;
   --warn: #c8102e;
+  color-scheme: light;
   font-family: "Inter", "Helvetica Neue", system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #1b1516;
     --panel: #221a1b;
+    --panel-2: #2a2122;
     --ink: #f1e9dd;
     --muted: #a8988d;
     --accent: #e0707c;
     --accent-ink: #1b1516;
     --line: #3b2f2f;
+    color-scheme: dark;
   }
 }
-:root { color-scheme: light dark; }
+:root[data-theme="dark"] {
+  --bg: #1b1516;
+  --panel: #221a1b;
+  --panel-2: #2a2122;
+  --ink: #f1e9dd;
+  --muted: #a8988d;
+  --accent: #e0707c;
+  --accent-ink: #1b1516;
+  --line: #3b2f2f;
+  color-scheme: dark;
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
 #globe { position: fixed; inset: 0 0 0 380px; }
 #panel {
   position: fixed; top: 0; left: 0; bottom: 0; width: 380px; overflow-y: auto;
-  background: var(--panel); border-right: 1px solid var(--line); padding: 18px 18px 30px;
+  background: var(--panel); border-right: 1px solid var(--line); padding: 0 18px 30px;
 }
+#panel > header {
+  position: sticky; top: 0; z-index: 2; background: var(--panel);
+  padding: 16px 0 0; margin-bottom: 4px; border-bottom: 1px solid var(--line);
+}
+.tabs { display: flex; gap: 2px; margin-top: 12px; }
+.tabs button {
+  flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted);
+  padding: 8px 4px 9px; font-weight: 600; font-size: 13px; border-bottom: 2px solid transparent;
+}
+.tabs button:hover { color: var(--ink); }
+.tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+.pane > section:first-child { border-top: 0; }
+section.clicked { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+.seg.mini { margin: 0; gap: 2px; flex-wrap: nowrap; flex-shrink: 0; }
+.seg.mini button { font-size: 11px; padding: 2px 7px; }
 header h1 { margin: 2px 0 2px; font-size: 24px; color: var(--accent); }
 .eyebrow { font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
 section { border-top: 1px solid var(--line); padding: 12px 0; }
@@ -43,9 +73,9 @@ button, select {
 }
 select, input[type=date] { flex: 1; min-width: 0; }
 /* Opened option lists use the OS colours; give them the panel colours so the text stays readable. */
-select { background: var(--panel); color-scheme: light dark; }
+select { background: var(--panel); }
 select option { background: var(--panel); color: var(--ink); }
-input[type=date] { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); color-scheme: light dark; }
+input[type=date] { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); }
 input[type=range]:disabled { opacity: .45; }
 button.primary, .seg button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: wait; }
@@ -90,5 +120,5 @@ footer a { color: var(--accent); }
 .cesium-viewer-bottom { left: 8px; }
 @media (max-width: 760px) {
   #globe { inset: 0 0 45vh 0; }
-  #panel { top: 55vh; width: 100%; border-right: 0; border-top: 1px solid var(--line); padding: 14px 16px 30px; }
+  #panel { top: 55vh; width: 100%; border-right: 0; border-top: 1px solid var(--line); padding: 0 16px 30px; }
 }

@@ -36,6 +36,7 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 | Sentinel-2 | true colour 10 m, last 3 weeks, cloud cover per scene | Copernicus via Earth Search (keyless) |
 | GPX | distance, ascent, profile, share of terrain ≥ 30°, wildlife zones crossed | swisstopo terrain, BAFU |
 | Click | ski route details with SAC link, wildlife zone rules, cableways | geo.admin.ch identify |
+| Side panel | four tabs (Day, Avalanche, Map, Route), winter light or dark theme (Auto follows the system); tab and theme are remembered in the browser | — |
 
 A sample route is in `web/samples/`.
 

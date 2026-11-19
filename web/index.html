@@ -6,6 +6,8 @@
   <title>Ski Bum's Delight</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Widgets/widgets.css">
   <link rel="stylesheet" href="css/app.css">
+  <script>try { const t = localStorage.getItem('sbd-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <script type="module" src="js/ui.js"></script>
   <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/';</script>
   <script src="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js"></script>
 </head>
@@ -14,108 +16,133 @@
 
   <aside id="panel">
     <header>
-      <div class="eyebrow">Winter truth · dated snow estimate</div>
+      <div class="row between">
+        <div class="eyebrow">Winter truth · dated snow estimate</div>
+        <div class="seg mini" id="theme" title="Colour theme">
+          <button data-theme="auto">Auto</button>
+          <button data-theme="light">Light</button>
+          <button data-theme="dark">Dark</button>
+        </div>
+      </div>
       <h1>Ski Bum's Delight</h1>
       <div class="muted" id="area-name"></div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="day" class="on">Day</button>
+        <button role="tab" data-tab="avalanche">Avalanche</button>
+        <button role="tab" data-tab="map">Map</button>
+        <button role="tab" data-tab="route">Route</button>
+      </nav>
     </header>
 
-    <section>
-      <h2>Base map</h2>
-      <div id="basemaps" class="seg"></div>
-      <label class="row small" id="image-year-row" hidden>Aerial year <select id="image-year"></select></label>
-      <p class="muted small">Aerial images are summer flights; for current snow use Sentinel-2 below.</p>
-    </section>
-
-    <section>
-      <h2>Layers</h2>
-      <div id="overlays"></div>
-      <label class="row"><input type="checkbox" id="bulletin-toggle"> Avalanche danger map (SLF)</label>
-      <label class="row"><input type="checkbox" id="stations-toggle" checked> Snow &amp; wind stations</label>
-    </section>
-
-    <section>
-      <div class="row between">
-        <h2>Terrain shading</h2>
-        <label class="switch"><input type="checkbox" id="light-toggle" checked><span></span></label>
-      </div>
-      <div class="seg" id="sun-mode">
-        <button data-mode="time" class="on">Date &amp; time</button>
-        <button data-mode="manual">Manual</button>
-      </div>
-      <div id="sun-time-controls">
-        <div class="row">
-          <input type="date" id="sun-date">
-          <button id="sun-now">Now</button>
+    <div class="pane" data-pane="day">
+      <section>
+        <div class="row between">
+          <h2>Sun &amp; shade</h2>
+          <label class="switch" title="Terrain shading"><input type="checkbox" id="light-toggle" checked><span></span></label>
         </div>
-        <label class="slider">Time of day <output id="time-out"></output>
-          <input type="range" id="sun-time" min="0" max="1439" step="5" value="720"></label>
-        <label class="row small"><input type="checkbox" id="sun-shadows"> Cast shadows (approximate: only terrain in view casts)</label>
-        <div id="sun-info" class="muted small"></div>
-      </div>
-      <p class="muted small">Sun &amp; shade map: exact terrain shadows from swissALTI3D (8 m) for an 8 × 8 km square, including mountains up to 4 km outside. Follows the date, time and sun sliders.</p>
-      <div class="row">
-        <button id="shade-run" class="primary">Sun &amp; shade map</button>
-        <button id="shade-clear">Clear</button>
-      </div>
-      <div id="shade-status" class="muted small"></div>
-      <label class="slider">Sun azimuth <output id="az-out"></output>
-        <input type="range" id="sun-az" min="0" max="359" value="135"></label>
-      <label class="slider">Sun elevation <output id="el-out"></output>
-        <input type="range" id="sun-el" min="-10" max="70" value="25"></label>
-    </section>
+        <div class="seg" id="sun-mode">
+          <button data-mode="time" class="on">Date &amp; time</button>
+          <button data-mode="manual">Manual</button>
+        </div>
+        <div id="sun-time-controls">
+          <div class="row">
+            <input type="date" id="sun-date">
+            <button id="sun-now">Now</button>
+          </div>
+          <label class="slider">Time of day <output id="time-out"></output>
+            <input type="range" id="sun-time" min="0" max="1439" step="5" value="720"></label>
+          <label class="row small"><input type="checkbox" id="sun-shadows"> Cast shadows (approximate: only terrain in view casts)</label>
+          <div id="sun-info" class="muted small"></div>
+        </div>
+        <label class="slider">Sun azimuth <output id="az-out"></output>
+          <input type="range" id="sun-az" min="0" max="359" value="135"></label>
+        <label class="slider">Sun elevation <output id="el-out"></output>
+          <input type="range" id="sun-el" min="-10" max="70" value="25"></label>
+      </section>
 
-    <section>
-      <h2>Avalanche bulletin</h2>
-      <div id="bulletin" class="muted">Loading…</div>
-    </section>
+      <section>
+        <h2>Sun &amp; shade map</h2>
+        <p class="muted small">Exact terrain shadows from swissALTI3D (8 m) for an 8 × 8 km square, including mountains up to 4 km outside. Follows the date, time and sun sliders.</p>
+        <div class="row">
+          <button id="shade-run" class="primary">Sun &amp; shade map</button>
+          <button id="shade-clear">Clear</button>
+        </div>
+        <div id="shade-status" class="muted small"></div>
+      </section>
 
-    <section>
-      <h2>Critical slopes</h2>
-      <p class="muted small">Computes slope and aspect from swissALTI3D (4 m) for an 8 × 8 km square around the view centre. “Critical” = ≥ 30° in an aspect and elevation the bulletin names.</p>
-      <div class="seg" id="slope-mode">
-        <button data-mode="critical" class="on">Critical per bulletin</button>
-        <button data-mode="classes">Slope classes</button>
-      </div>
-      <label class="row small"><input type="checkbox" id="slope-forest" checked> Closed forest protects (swissTLM3D “forest”; open forest and alder scrub do not)</label>
-      <div class="row">
-        <button id="slope-run" class="primary">Analyse view</button>
-        <button id="slope-clear">Clear</button>
-      </div>
-      <div id="slope-status" class="muted small"></div>
-      <div id="slope-legend" class="legend small"></div>
-    </section>
+      <section>
+        <h2>Wind forecast</h2>
+        <div id="wind" class="muted small">Click the terrain to get a forecast for that point.</div>
+      </section>
 
-    <section>
-      <h2>Stations</h2>
-      <div id="stations" class="muted small">Loading…</div>
-    </section>
+      <section>
+        <h2>Stations</h2>
+        <div id="stations" class="muted small">Loading…</div>
+      </section>
+    </div>
 
-    <section>
-      <h2>Wind forecast</h2>
-      <div id="wind" class="muted small">Click the terrain to get a forecast for that point.</div>
-    </section>
+    <div class="pane" data-pane="avalanche" hidden>
+      <section>
+        <h2>Avalanche bulletin</h2>
+        <label class="row small"><input type="checkbox" id="bulletin-toggle"> Show danger map (SLF) on the terrain</label>
+        <div id="bulletin" class="muted">Loading…</div>
+      </section>
 
-    <section>
-      <h2>Sentinel-2 imagery</h2>
-      <div class="row">
-        <select id="s2-scenes"><option>Searching…</option></select>
-        <button id="s2-load">Show</button>
-      </div>
-      <label class="row small"><input type="checkbox" id="s2-mask" checked> Hide clouds and cloud shadows</label>
-      <label class="slider">Opacity <input type="range" id="s2-alpha" min="0" max="100" value="100"></label>
-      <div id="s2-status" class="muted small"></div>
-    </section>
+      <section>
+        <h2>Critical slopes</h2>
+        <p class="muted small">Computes slope and aspect from swissALTI3D (4 m) for an 8 × 8 km square around the view centre. “Critical” = ≥ 30° in an aspect and elevation the bulletin names.</p>
+        <div class="seg" id="slope-mode">
+          <button data-mode="critical" class="on">Critical per bulletin</button>
+          <button data-mode="classes">Slope classes</button>
+        </div>
+        <label class="row small"><input type="checkbox" id="slope-forest" checked> Closed forest protects (swissTLM3D “forest”; open forest and alder scrub do not)</label>
+        <div class="row">
+          <button id="slope-run" class="primary">Analyse view</button>
+          <button id="slope-clear">Clear</button>
+        </div>
+        <div id="slope-status" class="muted small"></div>
+        <div id="slope-legend" class="legend small"></div>
+      </section>
+    </div>
 
-    <section>
-      <h2>GPX route</h2>
-      <label id="gpx-drop" class="drop">Drop a .gpx file here or click to choose
-        <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" hidden></label>
-      <div id="gpx-stats" class="small"></div>
-      <canvas id="gpx-profile" hidden></canvas>
-      <div id="gpx-zones" class="small"></div>
-    </section>
+    <div class="pane" data-pane="map" hidden>
+      <section>
+        <h2>Base map</h2>
+        <div id="basemaps" class="seg"></div>
+        <label class="row small" id="image-year-row" hidden>Aerial year <select id="image-year"></select></label>
+        <p class="muted small">Aerial images are summer flights; for current snow use Sentinel-2 below.</p>
+      </section>
 
-    <section>
+      <section>
+        <h2>Layers</h2>
+        <div id="overlays"></div>
+        <label class="row"><input type="checkbox" id="stations-toggle" checked> Snow &amp; wind stations</label>
+      </section>
+
+      <section>
+        <h2>Sentinel-2 imagery</h2>
+        <div class="row">
+          <select id="s2-scenes"><option>Searching…</option></select>
+          <button id="s2-load">Show</button>
+        </div>
+        <label class="row small"><input type="checkbox" id="s2-mask" checked> Hide clouds and cloud shadows</label>
+        <label class="slider">Opacity <input type="range" id="s2-alpha" min="0" max="100" value="100"></label>
+        <div id="s2-status" class="muted small"></div>
+      </section>
+    </div>
+
+    <div class="pane" data-pane="route" hidden>
+      <section>
+        <h2>GPX route</h2>
+        <label id="gpx-drop" class="drop">Drop a .gpx file here or click to choose
+          <input type="file" id="gpx-file" accept=".gpx,application/gpx+xml" hidden></label>
+        <div id="gpx-stats" class="small"></div>
+        <canvas id="gpx-profile" hidden></canvas>
+        <div id="gpx-zones" class="small"></div>
+      </section>
+    </div>
+
+    <section class="clicked">
       <h2>Clicked here</h2>
       <div id="info" class="muted small">Click a route, zone or lift on the map.</div>
     </section>
