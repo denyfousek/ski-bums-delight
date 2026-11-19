@@ -28,9 +28,24 @@ const viewer = new Cesium.Viewer('globe', {
   baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
   navigationHelpButton: false, animation: false, timeline: false, fullscreenButton: false,
   infoBox: false, selectionIndicator: false,
+  // Render at the screen's real pixel density. The default (true) renders at CSS pixels,
+  // which on a 150–200 % display halves the image and also loads coarser tiles.
+  useBrowserRecommendedResolution: false,
 });
-viewer.scene.globe.depthTestAgainstTerrain = true;
-viewer.scene.globe.maximumScreenSpaceError = 1.5;
+const globe = viewer.scene.globe;
+globe.depthTestAgainstTerrain = true;
+// Detail: tiles refine until their error is below 1.5 screen pixels. Fog normally lets
+// distant tiles stay coarse (factor 2); 0.25 keeps the far slopes nearly as sharp.
+globe.maximumScreenSpaceError = 1.5;
+viewer.scene.fog.screenSpaceErrorFactor = 0.25;
+globe.tileCacheSize = 1000;
+globe.preloadSiblings = true;
+// Brightness under terrain shading: Cesium multiplies the image by Lambert × 0.9 + 0.3,
+// so flat ground under a 24° winter sun ended up at ~67 %. Stronger direct light and a
+// brighter shadow floor keep flat ground near full brightness and slopes away from the
+// sun at ~50 %, so the relief stays readable.
+globe.lambertDiffuseMultiplier = 1.5;
+globe.vertexShadowDarkness = 0.5;
 viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#e9e4d6');
 viewer.creditDisplay.addStaticCredit(new Cesium.Credit('© swisstopo', true));
 text($('area-name'), `Test area: ${AREA.name}`);
