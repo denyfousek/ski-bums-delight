@@ -1,11 +1,11 @@
 :root {
-  /* Winter light: snow white, cool slate, alpine red as accent. */
+  /* Winter light: snow white, navy text, glacier blue as accent. */
   --bg: #eef2f6;
   --panel: #fbfcfd;
   --panel-2: #f1f4f8;
-  --ink: #18222e;
-  --muted: #5b6878;
-  --accent: #b3202e;
+  --ink: #142a44;
+  --muted: #4f6782;
+  --accent: #1f5f9e;
   --accent-ink: #ffffff;
   --line: #d9e0e8;
   --warn: #c8102e;
