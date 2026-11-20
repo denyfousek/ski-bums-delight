@@ -30,7 +30,7 @@ showTab(store('sbd-tab') || 'day');
 // Theme: auto follows the system, light/dark force it.
 const themeButtons = [...document.querySelectorAll('#theme [data-theme]')];
 function setTheme(theme) {
-  if (theme === 'light' || theme === 'dark') {
+  if (theme === 'light' || theme === 'dark' || theme === 'street') {
     document.documentElement.dataset.theme = theme;
     store('sbd-theme', theme);
   } else {

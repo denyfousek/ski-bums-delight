@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ski Bum's Delight</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Widgets/widgets.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bangers&display=swap">
   <link rel="stylesheet" href="css/app.css">
-  <script>try { const t = localStorage.getItem('sbd-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <script>try { const t = localStorage.getItem('sbd-theme'); if (t === 'light' || t === 'dark' || t === 'street') document.documentElement.dataset.theme = t; } catch (e) {}</script>
   <script type="module" src="js/ui.js"></script>
   <script>window.CESIUM_BASE_URL = 'https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/';</script>
   <script src="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js"></script>
@@ -22,9 +24,10 @@
           <button data-theme="auto">Auto</button>
           <button data-theme="light">Light</button>
           <button data-theme="dark">Dark</button>
+          <button data-theme="street">Street</button>
         </div>
       </div>
-      <h1>Ski Bum's Delight</h1>
+      <h1><span>Ski Bum's</span> <span>Delight</span></h1>
       <div class="muted" id="area-name"></div>
       <nav class="tabs" role="tablist">
         <button role="tab" data-tab="day" class="on">Day</button>

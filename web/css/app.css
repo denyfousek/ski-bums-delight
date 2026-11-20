@@ -122,3 +122,85 @@ footer a { color: var(--accent); }
   #globe { inset: 0 0 45vh 0; }
   #panel { top: 55vh; width: 100%; border-right: 0; border-top: 1px solid var(--line); padding: 0 16px 30px; }
 }
+
+/* ---------- Street theme: neon graffiti on a white brick wall ---------- */
+:root[data-theme="street"] {
+  --bg: #f4f1ec;
+  --panel: #f7f5f1;
+  --panel-2: #ffffff;
+  --ink: #151217;
+  --muted: #4d4559;
+  --accent: #ff2e93;
+  --accent-ink: #ffffff;
+  --teal: #13d3c6;
+  --violet: #7b2fd0;
+  --line: #151217;
+  --warn: #e0004d;
+  color-scheme: light;
+}
+[data-theme="street"] #panel {
+  border-right: 3px solid var(--ink);
+  background: var(--panel) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='56'%3E%3Cg stroke='%23e3ded6' stroke-width='2' fill='none'%3E%3Cpath d='M0 1H64M0 29H64M1 1V29M33 29V57'/%3E%3C/g%3E%3C/svg%3E");
+}
+[data-theme="street"] #panel > header {
+  border-bottom: 3px solid var(--ink);
+  background:
+    radial-gradient(60% 55% at 18% 62%, rgba(255,46,147,.22), transparent 70%),
+    radial-gradient(45% 50% at 62% 70%, rgba(19,211,198,.24), transparent 70%),
+    radial-gradient(40% 45% at 88% 40%, rgba(123,47,208,.20), transparent 70%),
+    var(--panel);
+}
+/* Paint drips hanging under the header. */
+[data-theme="street"] #panel > header::after {
+  content: ""; position: absolute; left: -18px; right: -18px; top: 100%; height: 22px; pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='22'%3E%3Cg stroke-linecap='round' stroke-width='5'%3E%3Cpath d='M16 0V11' stroke='%23ff2e93'/%3E%3Cpath d='M47 0V5' stroke='%2313d3c6'/%3E%3Cpath d='M78 0V15' stroke='%237b2fd0'/%3E%3Cpath d='M118 0V8' stroke='%23ff2e93'/%3E%3C/g%3E%3Ccircle cx='16' cy='13' r='3.6' fill='%23ff2e93'/%3E%3Ccircle cx='78' cy='17' r='3.8' fill='%237b2fd0'/%3E%3Ccircle cx='118' cy='10' r='3.4' fill='%23ff2e93'/%3E%3C/svg%3E") repeat-x;
+}
+[data-theme="street"] .eyebrow {
+  display: inline-block; background: var(--ink); color: #fff; padding: 2px 7px;
+  transform: rotate(-2deg); letter-spacing: .12em;
+}
+[data-theme="street"] header h1 {
+  font-family: "Bangers", "Impact", sans-serif; font-weight: 400; font-size: 42px; line-height: 1;
+  letter-spacing: 1.5px; margin: 10px 0 4px; transform: rotate(-3deg) skewX(-6deg); transform-origin: left;
+  -webkit-text-stroke: 2px var(--ink); paint-order: stroke fill;
+  text-shadow: 3px 3px 0 var(--violet), 5px 5px 0 var(--ink);
+}
+[data-theme="street"] header h1 span:first-child { color: var(--accent); }
+[data-theme="street"] header h1 span:last-child { color: var(--teal); }
+[data-theme="street"] #area-name { font-weight: 600; }
+[data-theme="street"] .tabs { gap: 6px; margin: 12px 0 10px; }
+[data-theme="street"] .tabs button {
+  font-family: "Bangers", "Impact", sans-serif; font-weight: 400; font-size: 18px; letter-spacing: 1px;
+  color: var(--ink); background: #fff; border: 2px solid var(--ink); border-radius: 8px;
+  padding: 4px 4px 2px; transform: skewX(-8deg);
+}
+[data-theme="street"] .tabs button.on { background: var(--accent); color: #fff; box-shadow: 3px 3px 0 var(--ink); border-bottom-color: var(--ink); }
+[data-theme="street"] .tabs button:hover:not(.on) { background: #e9fbf9; }
+[data-theme="street"] h2 {
+  font-family: "Bangers", "Impact", sans-serif; font-weight: 400; font-size: 21px; letter-spacing: 1.2px;
+  text-transform: none; color: var(--teal); -webkit-text-stroke: 1.2px var(--ink); paint-order: stroke fill;
+  text-shadow: 2px 2px 0 var(--ink);
+}
+[data-theme="street"] .pane > section, [data-theme="street"] section.clicked {
+  background: #fff; border: 2.5px solid var(--ink); border-radius: 12px; padding: 10px 12px; margin: 14px 0;
+  box-shadow: 5px 5px 0 var(--violet);
+}
+[data-theme="street"] .pane > section:nth-child(3n+2) { box-shadow: 5px 5px 0 var(--accent); }
+[data-theme="street"] .pane > section:nth-child(3n+3) { box-shadow: 5px 5px 0 var(--teal); }
+[data-theme="street"] section.clicked { box-shadow: 5px 5px 0 var(--ink); }
+[data-theme="street"] button, [data-theme="street"] select, [data-theme="street"] input[type=date] {
+  border: 2px solid var(--ink); border-radius: 8px; font-weight: 600; background: #fff;
+}
+[data-theme="street"] button.primary, [data-theme="street"] .seg button.on {
+  background: var(--accent); color: #fff; border-color: var(--ink); box-shadow: 2px 2px 0 var(--ink);
+}
+[data-theme="street"] button.primary:hover { background: var(--violet); }
+[data-theme="street"] .seg.mini button { border-width: 1.5px; box-shadow: none; }
+[data-theme="street"] .switch span { background: #d9d4cc; border: 2px solid var(--ink); }
+[data-theme="street"] .switch span::after { top: 1px; left: 1px; border: 2px solid var(--ink); width: 14px; height: 14px; }
+[data-theme="street"] .switch input:checked + span { background: var(--teal); }
+[data-theme="street"] input[type=range] { accent-color: var(--accent); }
+[data-theme="street"] input[type=checkbox] { accent-color: var(--violet); }
+[data-theme="street"] .warn-box { border: 2.5px solid var(--ink); border-left: 8px solid var(--accent); border-radius: 8px; background: #fff; }
+[data-theme="street"] footer a { color: var(--violet); font-weight: 700; }
+[data-theme="street"] .drop { border-color: var(--violet); }
