@@ -321,8 +321,12 @@ async function initStations() {
   }
   if (imis.status === 'rejected') {
     const warn = document.createElement('div');
-    warn.className = 'zone';
-    warn.textContent = `SLF stations unavailable: ${imis.reason.message}`;
+    // The SLF API sends no CORS header, so IMIS needs the local proxy in serve.py.
+    const local = ['localhost', '127.0.0.1'].includes(location.hostname);
+    warn.className = local ? 'zone' : 'muted small';
+    warn.textContent = local
+      ? `SLF stations unavailable: ${imis.reason.message}`
+      : 'SLF stations (IMIS) only in the local version; showing MeteoSwiss stations.';
     el.prepend(warn);
   }
   if (!list.length && imis.status === 'fulfilled') text(el, 'No stations in this area.');
