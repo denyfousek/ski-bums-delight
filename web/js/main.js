@@ -11,7 +11,7 @@ import {
 } from './bulletin.js';
 import { fetchModelSnow, stationSamples, fitSnowline, snowlineFromClasses, describeFit } from './snowline.js';
 import { createSnowMaterial, recentreSnowMaterial, updateSnowEye } from './snowlook.js';
-import { applyQuality, patchShadowPass, setShadowTerminator } from './quality.js';
+import { applyQuality, patchShadowPass, patchShadowCasters, setShadowTerminator } from './quality.js';
 import { smoothTerrain } from './terrainsmooth.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
 import { loadForestMask } from './forest.js';
@@ -39,6 +39,7 @@ const MOBILE = window.matchMedia('(max-width: 760px), (pointer: coarse)').matche
 // Snow view. `manual` is set once the user moves the slider; an estimate no longer moves it then.
 const snow = { on: storage.getItem('sbd-snow') !== '0', material: null, manual: false, fit: null, previousBasemap: null };
 const OWN_SHADOWS = patchShadowPass(Cesium); // before the viewer builds its first shader
+patchShadowCasters(Cesium); // tile skirts cast no shadows
 // High quality rendering: on by default except on phones; the choice is remembered.
 let highQuality = storage.getItem('sbd-hq') === null ? !MOBILE : storage.getItem('sbd-hq') === '1';
 // Every area change gets a number; answers of requests started for an older area are dropped.

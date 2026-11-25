@@ -557,7 +557,7 @@ test('terrain smoothing: too few points give no fit and keep their height', () =
 });
 
 // ---------- rendering quality ----------
-import { patchShadowPass, setShadowTerminator, QUALITY } from '../../web/js/quality.js';
+import { patchShadowPass, patchShadowCasters, setShadowTerminator, QUALITY } from '../../web/js/quality.js';
 
 // Stand-in for Cesium.ShadowMapShader: returns a shader source whose last part ends the
 // way CesiumJS 1.121 ends its shadow pass.
@@ -650,4 +650,38 @@ test('terrain smoothing: two tiles agree on their shared edge when each sees the
   const together = gap(fitWith(a, [{ band: bandB, offX: W, offY: 0 }]), fitWith(b, [{ band: bandA, offX: -W, offY: 0 }]));
   assert.ok(together < 0.01, `slopes differ by ${together}`);
   assert.ok(alone > 5 * together, `alone ${alone}, together ${together}`);
+});
+
+test('shadow casters: terrain tiles are drawn into the shadow map without their skirts', () => {
+  let calls = 0;
+  const C = { ShadowMap: { createCastDerivedCommand(maps, command, dirty, context, result) {
+    calls++;
+    return { castCommands: [{ count: command.count }, undefined, { count: command.count }], context };
+  } } };
+  assert.equal(patchShadowCasters(C), true);
+  const wrapped = C.ShadowMap.createCastDerivedCommand;
+  assert.equal(patchShadowCasters(C), true);
+  assert.equal(C.ShadowMap.createCastDerivedCommand, wrapped); // not wrapped twice
+  const tile = { count: 1200, owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  const r = C.ShadowMap.createCastDerivedCommand([], tile, false, 'ctx');
+  assert.deepEqual(r.castCommands.map((c) => c && c.count), [1000, undefined, 1000]);
+  assert.equal(r.context, 'ctx'); // arguments are passed through
+  assert.equal(tile.count, 1200); // the picture keeps the skirts
+  // Already without skirts (globe.showSkirts off), not terrain, or no mesh yet: untouched.
+  const bare = { count: 1000, owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], bare).castCommands[0].count, 1000);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50, owner: {} }).castCommands[0].count, 50);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50 }).castCommands[0].count, 50);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50, owner: { data: {} } }).castCommands[0].count, 50);
+  assert.equal(calls, 5);
+  // The debug wireframe draws line indices of the same tile: left alone.
+  C.PrimitiveType = { TRIANGLES: 4, LINES: 1 };
+  const mesh = { owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { ...mesh, count: 2400, primitiveType: 1 }).castCommands[0].count, 2400);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { ...mesh, count: 1200, primitiveType: 4 }).castCommands[0].count, 1000);
+});
+
+test('shadow casters: leaves an unknown Cesium alone', () => {
+  assert.equal(patchShadowCasters({}), false);
+  assert.equal(patchShadowCasters({ ShadowMap: {} }), false);
 });

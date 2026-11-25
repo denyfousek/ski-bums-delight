@@ -51,6 +51,40 @@ export function patchShadowPass(Cesium) {
   return true;
 }
 
+// Terrain tiles carry "skirts": vertical walls hanging down from their edges that hide the
+// gaps between tiles of different detail. The shadow pass draws them too, and with a low
+// sun they cast thin shadow lines along the tile borders: a net instead of filled shadows.
+// Measured: with globe.showSkirts = false the lines are gone. The skirts' triangles are the
+// last ones in a tile's index list, so the commands that draw a tile into the shadow map
+// simply stop before them. The picture itself keeps the skirts.
+// Upstream: CesiumGS/cesium issue 11459 (open); there is no public option. Cesium itself
+// cut the skirts from the cast commands until 2016 (its PR 3871).
+// Price: gaps between tiles of different detail are no longer closed in the shadow map, so
+// a thin lit sliver inside a shadow is possible there.
+// Leans on CesiumJS internals as they are in 1.121 (ShadowMap.createCastDerivedCommand,
+// TerrainMesh.indexCountWithoutSkirts). Returns false, changing nothing, if they are missing.
+export function patchShadowCasters(Cesium) {
+  const sm = Cesium.ShadowMap;
+  if (!sm || typeof sm.createCastDerivedCommand !== 'function') return false;
+  if (sm.sbdNoSkirts) return true;
+  const original = sm.createCastDerivedCommand;
+  sm.createCastDerivedCommand = function patched(shadowMaps, command, ...rest) {
+    const result = original.call(this, shadowMaps, command, ...rest);
+    const mesh = command && command.owner && command.owner.data && command.owner.data.renderedMesh;
+    const count = mesh && mesh.indexCountWithoutSkirts;
+    // Only the triangle list ends with the skirts (the debug wireframe draws line indices).
+    const triangles = Cesium.PrimitiveType ? command.primitiveType === Cesium.PrimitiveType.TRIANGLES : true;
+    if (count > 0 && triangles && result && Array.isArray(result.castCommands)) {
+      for (const cast of result.castCommands) {
+        if (cast && cast.count > count) cast.count = count;
+      }
+    }
+    return result;
+  };
+  sm.sbdNoSkirts = true;
+  return true;
+}
+
 export function applyQuality(Cesium, viewer, high, mobile = false) {
   const scene = viewer.scene;
   const q = high ? QUALITY.high : QUALITY.standard;
