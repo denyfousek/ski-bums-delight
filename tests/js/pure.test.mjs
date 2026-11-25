@@ -478,3 +478,80 @@ test('stations: compass and label repair', () => {
   assert.equal(fixMojibake('BÃ¤rentÃ¤lli'), 'Bärentälli');
   assert.equal(fixMojibake('Gütsch'), 'Gütsch');
 });
+
+// ---------- terrain smoothing ----------
+import { fitPlanes } from '../../web/js/terrainsmooth.js';
+
+// Irregular points over a 52 x 76 m tile (the size of a level-18 tile), about 0.6 m apart,
+// placed by a fixed pseudo-random sequence so the test is repeatable.
+function scatter(heightAt, count = 9000, width = 52, height = 76) {
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const x = new Float32Array(count); const y = new Float32Array(count); const z = new Float32Array(count);
+  for (let k = 0; k < count; k++) { x[k] = rnd() * width; y[k] = rnd() * height; z[k] = heightAt(x[k], y[k], rnd); }
+  return { x, y, z, width, height };
+}
+
+test('terrain smoothing: a steep tilted plane comes back unchanged, also at the border', () => {
+  // 40° slope: this is where averaging over mesh neighbours went wrong.
+  const a = 0.75; const b = -0.4;
+  const g = scatter((x, y) => 1900 + a * x + b * y);
+  const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, 1.6);
+  let worstZ = 0; let worstG = 0; let fitted = 0;
+  for (let k = 0; k < g.x.length; k++) {
+    if (!f.ok[k]) continue;
+    fitted++;
+    worstZ = Math.max(worstZ, Math.abs(f.z[k] - g.z[k]));
+    worstG = Math.max(worstG, Math.abs(f.gx[k] - a), Math.abs(f.gy[k] - b));
+  }
+  assert.equal(fitted, g.x.length, 'every vertex has a fit');
+  assert.ok(worstZ < 0.01, `height off by ${worstZ.toFixed(4)} m`);
+  assert.ok(worstG < 0.002, `slope off by ${worstG.toFixed(5)}`);
+});
+
+test('terrain smoothing: jitter is removed, the slope underneath is kept', () => {
+  const a = 0.6; const b = 0.2;
+  const g = scatter((x, y, rnd) => 2000 + a * x + b * y + (rnd() - 0.5) * 0.6); // ±0.3 m noise
+  const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, 1.6);
+  let before = 0; let after = 0; let grad = 0;
+  for (let k = 0; k < g.x.length; k++) {
+    const truth = 2000 + a * g.x[k] + b * g.y[k];
+    before += (g.z[k] - truth) ** 2;
+    after += (f.z[k] - truth) ** 2;
+    grad += (f.gx[k] - a) ** 2 + (f.gy[k] - b) ** 2;
+  }
+  const n = g.x.length;
+  const rmsBefore = Math.sqrt(before / n);
+  const rmsAfter = Math.sqrt(after / n);
+  near(rmsBefore, 0.173, 0.01, 'input noise');
+  assert.ok(rmsAfter < rmsBefore * 0.2, `noise ${rmsBefore.toFixed(3)} -> ${rmsAfter.toFixed(3)} m`);
+  // Slope error of the normals: under 2° on average.
+  assert.ok(Math.sqrt(grad / n) < Math.tan((2 * Math.PI) / 180), `slope rms ${Math.sqrt(grad / n).toFixed(4)}`);
+});
+
+test('terrain smoothing: real shape larger than the fit survives', () => {
+  // A ridge 4 m high and about 25 m wide. The heights are fitted over 0.6 m and must stay
+  // within a few centimetres; the wider fit used for the normals rounds the crest by
+  // about curvature x sigma² / 2 = 0.14 m, no more.
+  const ridge = (x) => 4 * Math.exp(-((x - 26) ** 2) / (2 * 6 ** 2));
+  const g = scatter((x) => 2100 + ridge(x));
+  const worst = (sigma) => {
+    const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, sigma);
+    let w = 0;
+    for (let k = 0; k < g.x.length; k++) w = Math.max(w, Math.abs(f.z[k] - g.z[k]));
+    return w;
+  };
+  assert.ok(worst(0.6) < 0.04, `heights changed by ${worst(0.6).toFixed(3)} m`);
+  assert.ok(worst(1.6) < 0.2, `wide fit changed by ${worst(1.6).toFixed(3)} m`);
+});
+
+test('terrain smoothing: too few points give no fit and keep their height', () => {
+  const x = Float32Array.from([1, 30]); const y = Float32Array.from([1, 60]); const z = Float32Array.from([100, 200]);
+  const f = fitPlanes(x, y, z, 52, 76, 1.6);
+  assert.deepEqual([...f.ok], [0, 0]);
+  assert.deepEqual([...f.z], [100, 200]);
+  // Points on one line carry no plane either.
+  const n = 200;
+  const lx = new Float32Array(n).fill(10); const ly = Float32Array.from({ length: n }, (_, k) => k * 0.3); const lz = new Float32Array(n).fill(5);
+  assert.ok(fitPlanes(lx, ly, lz, 52, 76, 1.6).ok.every((v) => v === 0));
+});

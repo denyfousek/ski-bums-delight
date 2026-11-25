@@ -29,6 +29,7 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 |---|---|---|
 | Snow view | GPU shader on the globe: snow above the snow line (lower on north faces, higher on south faces), steep faces stay rock with the aerial image showing through, warm sunlight, bluish shade, contour lines every 100 m (every 20 m close up). Drawn from terrain alone: it shows shape, not measured snow cover | swisstopo terrain |
 | Snow line | estimated per area from snow depth against elevation: 25 model points (MeteoSwiss ICON) plus the stations, which count four times; shown with its date and method; slider to override. A loaded Sentinel-2 scene gives a second, observed value (share of snow per 100 m band from the scene classification) | Open-Meteo, SLF, MeteoSwiss, Copernicus |
+| Close-up terrain | the finest terrain tiles (level 18, a vertex every 0.4 to 0.9 m) carry height jitter that shows as terraces under low sun; at load a plane is fitted around every vertex (Gaussian weight, 1.6 m for the normals, 0.6 m for the heights), which removes the jitter and keeps slopes exact. `?terrain=raw` shows the tiles as delivered | swisstopo terrain |
 | Areas | presets, "View" (19 × 14 km around the view centre) or your position; stations, satellite scenes and snow line reload; remembered in the browser | — |
 | 3D view | swisstopo terrain, winter/summer national map or SWISSIMAGE | geo.admin.ch |
 | Layers | slope ≥ 30°, ski and snowshoe routes, lifts, wildlife rest zones and protection areas | swisstopo, BAFU |
@@ -94,6 +95,7 @@ web/js/config.js    endpoints, layer IDs
 web/js/areas.js     area presets, boxes, storage
 web/js/snowline.js  snow line estimate
 web/js/snowlook.js  snow view shader (Cesium globe material)
+web/js/terrainsmooth.js  smoothing of the finest terrain tiles
 web/js/ui.js        tabs, theme, bottom sheet, service worker registration
 web/sw.js           service worker (app shell only)
 web/manifest.webmanifest, web/icons/   installable app

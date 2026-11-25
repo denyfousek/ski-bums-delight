@@ -11,6 +11,7 @@ import {
 } from './bulletin.js';
 import { fetchModelSnow, stationSamples, fitSnowline, snowlineFromClasses, describeFit } from './snowline.js';
 import { createSnowMaterial, recentreSnowMaterial } from './snowlook.js';
+import { smoothTerrain } from './terrainsmooth.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
 import { loadForestMask } from './forest.js';
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
@@ -43,6 +44,8 @@ function text(el, s) { el.textContent = s; }
 
 // ---------- viewer ----------
 const terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(TERRAIN_URL, { requestVertexNormals: true });
+// Close-up tiles are smoothed at load (see terrainsmooth.js); ?terrain=raw shows them as delivered.
+if (new URLSearchParams(location.search).get('terrain') !== 'raw') smoothTerrain(Cesium, terrainProvider);
 const viewer = new Cesium.Viewer('globe', {
   baseLayer: false,
   terrainProvider,
