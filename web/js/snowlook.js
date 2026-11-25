@@ -151,8 +151,10 @@ czm_material czm_getMaterial(czm_materialInput materialInput) {
     vec3 dpx = dFdx(world); vec3 dpy = dFdy(world);
     vec3 dnx = dFdx(n); vec3 dny = dFdy(n);
     float curv = (dot(dnx, dpx) + dot(dny, dpy)) / (dot(dpx, dpx) + dot(dpy, dpy) + 0.000001); // 1/m
-    float hollow = clamp(curv * 5.0, -1.0, 1.0);                    // -1 hollow .. +1 ridge
-    float open = clamp(0.86 + 0.20 * hollow, 0.62, 1.06);
+    // The vertex normal is interpolated linearly, so this is constant inside a mesh
+    // triangle. It is kept weak and fades out close up, where triangles become visible.
+    float hollow = clamp(curv * 2.5, -1.0, 1.0) * smoothstep(0.12, 0.6, pixel); // -1 hollow .. +1 ridge
+    float open = clamp(0.90 + 0.12 * hollow, 0.76, 1.02);
     vec3 skyCol = mix(vec3(0.30, 0.40, 0.66), vec3(0.41, 0.60, 0.95), sunUp) * (0.55 + 0.45 * sunUp);
     vec3 ambient = skyCol * (0.30 + 0.46 * skyView) * open;
     // Snow facing snow: slopes get some warm light back from the sunlit ground around them.
@@ -167,14 +169,16 @@ czm_material czm_getMaterial(czm_materialInput materialInput) {
     float NH = max(dot(N, H), 0.0);
     float lit = smoothstep(0.0, 0.12, NL) * sunUp;
     colour += sunCol * pow(NH, 28.0) * 0.20 * lit;
-    float cellSize = max(0.035, pixel * 1.6);
+    // Cell size in steps of two: a size taken straight from the pixel footprint would
+    // shift the whole grid with every small camera move and make the crystals swim.
+    float cellSize = 0.035 * exp2(ceil(log2(max(pixel * 1.6 / 0.035, 1.0))));
     vec2 cellId = floor(ground / cellSize);
     float crystal = sbdHash(cellId);
     float facet = fract(crystal * 57.3 + dot(V, vec3(31.0, 17.0, 23.0)) + dot(L, vec3(13.0, 29.0, 7.0)));
     float sparkle = step(0.994, crystal) * smoothstep(0.55, 1.0, facet) * pow(NH, 3.0);
     colour += sunCol * sparkle * 1.6 * lit * (1.0 - smoothstep(60.0, 420.0, dist));
     // At a flat angle of view snow mirrors a little of the sky.
-    vec3 mirror = skyCol * pow(1.0 - max(dot(N, V), 0.0), 4.0) * 0.16;
+    vec3 mirror = skyCol * pow(clamp(1.0 - dot(N, V), 0.0, 1.0), 4.0) * 0.16;
     colour += mirror;
     shadowCol += mirror;
 
@@ -228,6 +232,7 @@ czm_material czm_getMaterial(czm_materialInput materialInput) {
     float far = 1.0 - smoothstep(9000.0, 26000.0, dist);  // no line clutter on distant ranges
     float c = max(c100 * 0.34 * far, c20 * 0.20);
     colour = mix(colour, vec3(0.36, 0.47, 0.64), c);
+    shadowCol *= 1.0 - 0.45 * c; // the lines stay visible inside cast shadows
   }
 
   material.diffuse = colour;

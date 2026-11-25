@@ -5,12 +5,12 @@
 //   cache as fallback, so the shell opens offline.
 // Map tiles, the bulletin, stations and forecasts are other origins and are never touched;
 // the local proxy (/proxy/) is left alone as well.
-const CACHE = 'sbd-shell-v3';
+const CACHE = 'sbd-shell-v4';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon-192.png',
   'js/main.js', 'js/ui.js', 'js/config.js', 'js/areas.js', 'js/bulletin.js', 'js/forest.js',
   'js/gpx.js', 'js/proj.js', 'js/quality.js', 'js/sentinel.js', 'js/shade.js', 'js/slope.js', 'js/snowline.js',
-  'js/snowlook.js', 'js/stations.js', 'js/sun.js', 'js/terrainsmooth.js', 'js/weather.js',
+  'js/snowlook.js', 'js/stations.js', 'js/sun.js', 'js/terrainsmooth.js', 'js/terrainsmooth.worker.js', 'js/weather.js',
 ];
 
 self.addEventListener('install', (event) => {

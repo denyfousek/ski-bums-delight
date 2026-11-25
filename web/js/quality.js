@@ -37,17 +37,34 @@ export function patchShadowPass(Cesium) {
     }
     return source;
   };
+  // The shadow map's "normal shading" switch (see setShadowTerminator) changes the shader
+  // text but is not part of Cesium's cache key for it; without this a shader built before
+  // the switch would be reused after it.
+  const originalKey = sms.getShadowReceiveShaderKeyword;
+  if (typeof originalKey === 'function') {
+    sms.getShadowReceiveShaderKeyword = function patchedKey(shadowMap, ...rest) {
+      const bias = shadowMap && shadowMap._terrainBias;
+      return originalKey.call(this, shadowMap, ...rest) + (bias && bias.normalShading === false ? ' sbdOwnTerminator' : '');
+    };
+  }
   sms.sbdPatched = true;
   return true;
 }
 
-export function applyQuality(Cesium, viewer, high) {
+export function applyQuality(Cesium, viewer, high, mobile = false) {
   const scene = viewer.scene;
   const q = high ? QUALITY.high : QUALITY.standard;
   // Terrain shadows (switched on and off with the sun in main.js).
   const sm = viewer.shadowMap;
-  sm.size = q.shadowSize;
-  sm.softShadows = true;
+  // Four cascades make Cesium allocate a texture twice this size per side: 8192² (about
+  // 256 MB) at 4096. Phones stay at 2048 even in high quality.
+  sm.size = mobile ? QUALITY.standard.shadowSize : q.shadowSize;
+  // Cesium's setters reset the map's "dirty" flag when the value is unchanged, which would
+  // cancel a rebuild another call has just asked for; so only assign real changes.
+  if (!sm.softShadows) sm.softShadows = true;
+  // Cesium fades shadows out while the sun is below about 6°. The snow shader and the
+  // patched shadow pass both work with the nominal darkness, so the fade is switched off.
+  sm.fadingEnabled = false;
   sm.maximumDistance = q.shadowDistance;
   sm.darkness = q.shadowDarkness;
   // Haze: distant ranges fade towards the sky colour.

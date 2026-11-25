@@ -608,3 +608,13 @@ test('shadow terminator switch marks the shadow map dirty only on a change', () 
   assert.equal(viewer.shadowMap._terrainBias.normalShading, true);
   assert.ok(QUALITY.high.shadowSize > QUALITY.standard.shadowSize);
 });
+
+test('shadow pass patch: the terminator switch becomes part of the shader cache key', () => {
+  const C = fakeCesium();
+  C.ShadowMapShader.getShadowReceiveShaderKeyword = () => 'receiveShadow terrain';
+  patchShadowPass(C);
+  const key = (normalShading) => C.ShadowMapShader.getShadowReceiveShaderKeyword({ _terrainBias: { normalShading } }, true, true, true);
+  assert.equal(key(true), 'receiveShadow terrain');
+  assert.notEqual(key(false), key(true));
+  assert.equal(C.ShadowMapShader.getShadowReceiveShaderKeyword({}, true, false, false), 'receiveShadow terrain');
+});

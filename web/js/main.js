@@ -232,7 +232,7 @@ function updateSun() {
   if (snow.material) snow.material.uniforms.selfShade = lightOn ? 0 : 1;
   // High quality always casts terrain shadows; otherwise only on request.
   const shadows = lightOn && ($('sun-shadows').checked || highQuality) && Number($('sun-el').value) > 0;
-  viewer.shadows = shadows;
+  if (viewer.shadows !== shadows) viewer.shadows = shadows; // an unchanged value would clear the shadow map's rebuild flag
   viewer.terrainShadows = shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
   if (snow.material) snow.material.uniforms.shadowDark = shadows ? viewer.shadowMap.darkness : 1;
   scheduleShade();
@@ -990,9 +990,9 @@ function setQuality(on) {
   storage.setItem('sbd-hq', on ? '1' : '0');
   $('hq-toggle').checked = on;
   $('sun-shadows').disabled = on;
-  applyQuality(Cesium, viewer, on);
-  applySnow();
+  applyQuality(Cesium, viewer, on, MOBILE);
   updateSun();
+  applySnow(); // last: it may ask the shadow map for a rebuild
 }
 $('hq-toggle').onchange = () => setQuality($('hq-toggle').checked);
 // The snow shader works in coordinates relative to the camera; hand it the camera's

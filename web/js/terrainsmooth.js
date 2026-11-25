@@ -5,7 +5,7 @@
 //
 // Method: around every vertex a plane is fitted to the heights nearby, weighted by a
 // Gaussian of the distance (moving least squares, degree 1). The vertex gets the plane's
-// height, and its normal is the plane's normal. A plane fit reproduces any tilted plane
+// height (moved by 0.3 m at most), and its normal is the plane's normal. A plane fit reproduces any tilted plane
 // exactly, also at a tile's border where data exist on one side only.
 // (Averaging each vertex with its mesh neighbours was tried first and dropped: on an
 // irregular mesh it bends a steep, perfectly even slope and so adds bumps of its own.)
@@ -124,11 +124,44 @@ export function fitPlanes(x, y, z, width, height, sigma, cell = 0.5) {
   return out;
 }
 
-// What is done per terrain level: sigma of the fit in metres for the heights and for the
-// normals. Only level 18 is touched; level 17 (a vertex every ~2 m) is smooth as delivered.
-export const SMOOTHING = { 18: { heights: 0.6, normals: 1.6 } };
+// What is done per terrain level. sigma: reach of the plane fit in metres; maxShift: the
+// most a height may move (the jitter is a few decimetres; real steps such as rock bands,
+// walls and road cuts must stay). Only level 18 is touched; level 17 (a vertex every ~2 m)
+// is smooth as delivered.
+export const SMOOTHING = { 18: { sigma: 1.6, maxShift: 0.3 } };
 
 // ---------- Cesium wiring ----------
+// The fit costs 10 to 25 ms per tile, too much for the frame it would land in. It runs in a
+// worker; the tile is handed to Cesium when the answer is back. Without workers (or if the
+// worker fails to start) the fit runs on the main thread.
+let worker = null;
+let workerFailed = false;
+let nextJob = 1;
+const jobs = new Map();
+function fitInWorker(xs, ys, hs, widthM, heightM, sigma) {
+  if (workerFailed || typeof Worker === 'undefined') return Promise.resolve(fitPlanes(xs, ys, hs, widthM, heightM, sigma));
+  if (!worker) {
+    try {
+      worker = new Worker(new URL('./terrainsmooth.worker.js', import.meta.url), { type: 'module' });
+      worker.onmessage = (e) => { const job = jobs.get(e.data.id); jobs.delete(e.data.id); if (job) job.resolve(e.data.fit); };
+      worker.onerror = () => {
+        // Finish everything that is waiting on the main thread and stop using the worker.
+        workerFailed = true;
+        for (const job of jobs.values()) job.resolve(fitPlanes(job.xs, job.ys, job.hs, job.widthM, job.heightM, job.sigma));
+        jobs.clear();
+      };
+    } catch {
+      workerFailed = true;
+      return Promise.resolve(fitPlanes(xs, ys, hs, widthM, heightM, sigma));
+    }
+  }
+  return new Promise((resolve) => {
+    const id = nextJob++;
+    jobs.set(id, { resolve, xs, ys, hs, widthM, heightM, sigma });
+    worker.postMessage({ id, xs, ys, hs, widthM, heightM, sigma }); // copies; the originals stay for the fallback
+  });
+}
+
 // Wraps the provider's requestTileGeometry. It relies on the private fields of
 // QuantizedMeshTerrainData as they are in CesiumJS 1.121 (the version index.html pins);
 // if a field is missing the tile is passed through untouched.
@@ -136,15 +169,14 @@ export function smoothTerrain(Cesium, provider, settings = SMOOTHING) {
   const original = provider.requestTileGeometry.bind(provider);
   provider.requestTileGeometry = (x, y, level, request) => {
     const pending = original(x, y, level, request);
-    if (!pending || !settings[level]) return pending;
-    return pending.then((data) => {
-      try { smoothTile(Cesium, provider, data, x, y, level, settings[level]); } catch { /* keep the tile as delivered */ }
-      return data;
-    });
+    // Only the globe passes a Request object. Cesium's sampleTerrain calls with three
+    // arguments; route analysis and click elevations keep the heights as delivered.
+    if (!pending || !settings[level] || !request) return pending;
+    return pending.then((data) => smoothTile(Cesium, provider, data, x, y, level, settings[level]).catch(() => {}).then(() => data));
   };
 }
 
-function smoothTile(Cesium, provider, data, tx, ty, level, { heights, normals }) {
+async function smoothTile(Cesium, provider, data, tx, ty, level, { sigma, maxShift }) {
   const q = data._quantizedVertices;
   const enc = data._encodedNormals;
   if (!q || !enc || data._sbdSmoothed) return;
@@ -165,37 +197,50 @@ function smoothTile(Cesium, provider, data, tx, ty, level, { heights, normals })
     ys[i] = (q[n + i] / 32767) * heightM;
     hs[i] = (q[2 * n + i] / 32767) * range;
   }
+  const fit = await fitInWorker(xs, ys, hs, widthM, heightM, sigma);
+  if (data._quantizedVertices !== q || data._sbdSmoothed) return; // Cesium has moved on with this tile
 
-  // Normals first, from the heights as delivered.
-  const forNormals = fitPlanes(xs, ys, hs, widthM, heightM, normals);
+  // Normals: the fitted plane's, blended towards the delivered normal near the tile border.
+  // The neighbouring tile fits from its own vertices only and would light the shared edge
+  // differently; the delivered normals agree across it.
   const frame = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromRadians((rect.west + rect.east) / 2, lat, 0));
   const E = Cesium.Matrix4.getColumn(frame, 0, new Cesium.Cartesian4());
   const N = Cesium.Matrix4.getColumn(frame, 1, new Cesium.Cartesian4());
   const U = Cesium.Matrix4.getColumn(frame, 2, new Cesium.Cartesian4());
   const world = new Cesium.Cartesian3();
+  const delivered = new Cesium.Cartesian3();
   const oct = new Cesium.Cartesian2();
   for (let i = 0; i < n; i++) {
-    if (!forNormals.ok[i]) continue; // keeps the delivered normal
-    const e = -forNormals.gx[i]; const nn = -forNormals.gy[i];
+    if (!fit.ok[i]) continue; // keeps the delivered normal
+    const e = -fit.gx[i]; const nn = -fit.gy[i];
     const l = Math.hypot(e, nn, 1);
     world.x = (E.x * e + N.x * nn + U.x) / l;
     world.y = (E.y * e + N.y * nn + U.y) / l;
     world.z = (E.z * e + N.z * nn + U.z) / l;
+    const d = Math.min(xs[i], widthM - xs[i], ys[i], heightM - ys[i]) / (2 * sigma); // 0 on the border, 1 from 2 sigma inward
+    if (d < 1) {
+      const k = d <= 0 ? 0 : d * d * (3 - 2 * d);
+      Cesium.AttributeCompression.octDecode(enc[i * 2], enc[i * 2 + 1], delivered);
+      world.x = delivered.x + (world.x - delivered.x) * k;
+      world.y = delivered.y + (world.y - delivered.y) * k;
+      world.z = delivered.z + (world.z - delivered.z) * k;
+      Cesium.Cartesian3.normalize(world, world);
+    }
     Cesium.AttributeCompression.octEncode(world, oct);
     enc[i * 2] = oct.x;
     enc[i * 2 + 1] = oct.y;
   }
 
-  // Heights, more gently. Border vertices stay exactly where they are: the neighbouring
-  // tile, often of a coarser level, has to meet them.
+  // Heights: towards the fitted plane, but never further than maxShift. Border vertices
+  // stay exactly where they are: the neighbouring tile, often of a coarser level, has to meet them.
   const border = new Uint8Array(n);
   for (const edge of [data._westIndices, data._southIndices, data._eastIndices, data._northIndices]) {
     for (const i of edge || []) border[i] = 1;
   }
-  const fit = fitPlanes(xs, ys, hs, widthM, heightM, heights);
   for (let i = 0; i < n; i++) {
     if (border[i] || !fit.ok[i]) continue;
-    q[2 * n + i] = Math.max(0, Math.min(32767, Math.round((fit.z[i] / range) * 32767)));
+    const shift = Math.max(-maxShift, Math.min(maxShift, fit.z[i] - hs[i]));
+    q[2 * n + i] = Math.max(0, Math.min(32767, Math.round(((hs[i] + shift) / range) * 32767)));
   }
   data._sbdSmoothed = true;
 }
