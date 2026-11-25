@@ -1,5 +1,6 @@
-// Service worker for Ski Bum's Delight: makes the app installable and lets it start
-// without a connection. It only handles the app's own files (same origin, GET):
+// Service worker for Ski Bum's Delight: makes the app installable and keeps the app's own
+// files for a start on a bad connection. Fully offline the map still cannot start: CesiumJS
+// and all tiles come from other servers and are not stored here. It only handles the app's own files (same origin, GET):
 //   network first, so an update is picked up on the next load,
 //   cache as fallback, so the shell opens offline.
 // Map tiles, the bulletin, stations and forecasts are other origins and are never touched;
@@ -37,6 +38,7 @@ self.addEventListener('fetch', (event) => {
         }
         return res;
       })
-      .catch(() => caches.match(req, { ignoreSearch: true }).then((hit) => hit || caches.match('index.html'))),
+      .catch(() => caches.match(req, { ignoreSearch: true })
+        .then((hit) => hit || (req.mode === 'navigate' ? caches.match('index.html') : Response.error()))),
   );
 });

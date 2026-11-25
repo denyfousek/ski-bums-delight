@@ -296,6 +296,19 @@ test('route check: sections, short ones absorbed, red ones kept', () => {
   for (let i = 21; i < 30; i++) pts.push(mk(i, 32, 180));       // yellow, 180 m
   const c = routeCheck(pts, () => rules);
   assert.deepEqual(c.sections.map((s) => s.check), [GREEN, RED, YELLOW]);
+  // A short yellow point right after a red one stays out of the red section.
+  const pts2 = [];
+  for (let i = 0; i < 10; i++) pts2.push(mk(i, 10, 0));
+  pts2.push(mk(10, 31, 0));   // red: steep and facing north
+  pts2.push(mk(11, 44, 180)); // yellow: steeper, but facing south
+  for (let i = 12; i < 20; i++) pts2.push(mk(i, 10, 0));
+  const c2 = routeCheck(pts2, () => rules);
+  const red = c2.sections.filter((s) => s.check === RED);
+  assert.equal(red.length, 1);
+  assert.equal(red[0].from, 10);
+  assert.equal(red[0].to, 10);
+  near(red[0].maxSlope, 31, 1e-9);
+  assert.equal(red[0].aspect, 'N');
   assert.equal(c.sections[1].from, 20);
   assert.equal(c.sections[1].aspect, 'N');
   near(c.sections[1].maxSlope, 36, 1e-9);
@@ -345,6 +358,36 @@ test('snow line: a trusted station outweighs a single model point', () => {
     { elevation: 1200, depthM: 0.5 }, { elevation: 1400, depthM: 0, weight: 4 }, { elevation: 2000, depthM: 0.6 },
   ]);
   assert.equal(f.line, 1700);
+});
+
+test('snow line: independent of input order when two points share a height', () => {
+  const a = [{ elevation: 1000, depthM: 0 }, { elevation: 1500, depthM: 0 }, { elevation: 1500, depthM: 0.3 }, { elevation: 2000, depthM: 0.5 }];
+  const b = [a[0], a[2], a[1], a[3]];
+  assert.equal(fitSnowline(a).line, fitSnowline(b).line);
+});
+
+test('snow line: two separate optima do not average into a worse cut', () => {
+  // bare, snow, bare, snow, snow: cutting below 1200 or between 1400 and 1600 are both
+  // optimal for the weights below; the middle of the two would not be.
+  const f = fitSnowline([
+    { elevation: 1000, depthM: 0 }, { elevation: 1200, depthM: 0.2 },
+    { elevation: 1400, depthM: 0, weight: 2 }, { elevation: 1600, depthM: 0.4 }, { elevation: 1800, depthM: 0.5 },
+  ]);
+  assert.ok(f.line === 1100 || f.line === 1500, `line ${f.line}`);
+});
+
+test('snow line from satellite: a thin bare band on top does not hide the snow below', () => {
+  const pts = [];
+  for (let e = 1000; e < 3000; e += 20) for (let n = 0; n < 2; n++) pts.push({ elevation: e, cls: e >= 1900 && e < 2900 ? 'snow' : 'ground' });
+  const r = snowlineFromClasses(pts);
+  assert.equal(r.line, 1900);
+  assert.ok(!r.above);
+});
+
+test('history moments use the Swiss calendar day', () => {
+  // 23:30 UTC on the 24th is 00:30 on the 25th in Switzerland: yesterday is the 24th.
+  const m = historyMoments(new Date(Date.UTC(2026, 10, 24, 23, 30)), 1);
+  assert.equal(m[0].toISOString(), '2026-11-24T10:00:00.000Z');
 });
 
 test('snow line from satellite classes', () => {

@@ -31,9 +31,12 @@ export async function fetchBulletin(activeAt = null) {
 // Moments to ask the archive for: 10:00 UTC on each of the last `days` days before `now`
 // (late morning in Switzerland, when the day's bulletin is in force). Newest first.
 export function historyMoments(now, days = 7) {
+  // "Yesterday" is counted in Swiss time: shortly after midnight there, UTC is still on the day before.
+  const [y, mo, d] = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Zurich', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .format(now).split('-').map(Number);
   const out = [];
   for (let i = 1; i <= days; i++) {
-    out.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i, 10, 0, 0)));
+    out.push(new Date(Date.UTC(y, mo - 1, d - i, 10, 0, 0)));
   }
   return out;
 }

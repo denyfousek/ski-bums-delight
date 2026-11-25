@@ -139,8 +139,8 @@ export function classifyPoint(p, rules) {
 }
 
 // Adds `check` to every point and merges neighbours into sections. Sections shorter than
-// `minLen` metres are absorbed by the section before them, except red ones: a short red
-// stretch is still worth showing. rulesAt(lon, lat) -> rules or null.
+// `minLen` metres are absorbed by the green or yellow section before them. Red ones are
+// neither absorbed nor do they absorb: a short red stretch is still worth showing, exactly. rulesAt(lon, lat) -> rules or null.
 export function routeCheck(pts, rulesAt, minLen = 40) {
   const points = pts.map((p) => ({ ...p, check: classifyPoint(p, rulesAt ? rulesAt(p.lon, p.lat) : null) }));
   const raw = [];
@@ -152,7 +152,10 @@ export function routeCheck(pts, rulesAt, minLen = 40) {
   for (const s of raw) {
     const len = points[s.to].dist - points[Math.max(0, s.from - 1)].dist;
     const prev = merged[merged.length - 1];
-    if (prev && (prev.check === s.check || (s.check !== RED && len < minLen))) prev.to = s.to;
+    // A red section never absorbs anything: its slope, aspect and length must describe
+    // only the points the bulletin names.
+    const absorb = s.check !== RED && len < minLen && prev && prev.check !== RED;
+    if (prev && (prev.check === s.check || absorb)) prev.to = s.to;
     else merged.push({ ...s });
   }
   const sections = merged.map((s) => {

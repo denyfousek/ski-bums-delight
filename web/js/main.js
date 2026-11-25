@@ -129,7 +129,7 @@ for (const b of BASEMAPS) {
   const btn = document.createElement('button');
   btn.textContent = b.label;
   btn.dataset.id = b.id;
-  btn.onclick = () => setBasemap(b.id);
+  btn.onclick = () => { snow.previousBasemap = null; setBasemap(b.id); };
   $('basemaps').append(btn);
 }
 setBasemap('winter');
@@ -334,6 +334,7 @@ async function initBulletin() {
   try {
     state.bulletin = await fetchBulletin();
     showBulletinFor(...centre(area));
+    if (lastGpxText) loadGpxText(lastGpxText); // a route analysed before the bulletin arrived had no red sections
     state.bulletinDs = await addBulletinLayer(viewer, state.bulletin);
     state.bulletinDs.show = $('bulletin-toggle').checked;
   } catch (err) {
@@ -633,7 +634,7 @@ $('s2-load').onclick = async () => {
         if (sl.line !== null) {
           const where = sl.above ? 'above' : (sl.below ? 'at or below' : 'around');
           text($('s2-snow-text'), `Snow line in this scene (${day}): ${where} ${sl.line} m, from ${sl.clear} cloud-free points.`);
-          $('s2-snow-use').onclick = () => setSnowline(sl.line, true, `Sentinel-2 scene of ${day}`);
+          $('s2-snow-use').onclick = () => setSnowline(sl.above ? NO_SNOW_LINE : sl.line, true, `Sentinel-2 scene of ${day}`);
           $('s2-snow').hidden = false;
         }
       } catch { /* the image is shown either way */ }
@@ -648,12 +649,14 @@ $('s2-alpha').oninput = () => { if (state.s2Layer) state.s2Layer.alpha = Number(
 
 // ---------- GPX ----------
 let gpxTurn = 0;
+let lastGpxText = null;
 function clearGpx() {
   for (const e of state.gpx) viewer.entities.remove(e);
   state.gpx = [];
 }
 async function loadGpxText(textContent) {
   const turn = ++gpxTurn;
+  lastGpxText = textContent;
   const out = $('gpx-stats');
   out.replaceChildren();
   $('gpx-zones').replaceChildren();
@@ -706,7 +709,13 @@ async function loadGpxText(textContent) {
     drawProfile($('gpx-profile'), check.points, check.sections);
     renderRouteCheck(check);
 
-    const zones = await wildlifeZonesOnRoute(pts);
+    let zones;
+    try {
+      zones = await wildlifeZonesOnRoute(pts);
+    } catch (err) {
+      if (turn === gpxTurn) text($('gpx-zones'), `Wildlife zones could not be checked: ${err.message}`);
+      return;
+    }
     if (turn !== gpxTurn) return;
     const zEl = $('gpx-zones');
     if (!zones.length) text(zEl, 'No wildlife rest zone or protection area on this route.');
@@ -882,7 +891,9 @@ clickHandler.setInputAction(async (ev) => {
 // ---------- snow view ----------
 // A globe material paints the snow cover on the GPU (see snowlook.js). The snow line comes
 // from an estimate (see snowline.js) until the user moves the slider.
+const NO_SNOW_LINE = 3600; // slider maximum: nothing in Switzerland's touring terrain is painted
 function applySnow() {
+  text($('snow-out'), `${$('snow-line').value} m`); // C8: the read-out is never empty
   if (snow.on && !snow.material) {
     snow.material = createSnowMaterial(Cesium, ...centre(area), { snowline: Number($('snow-line').value) });
   }
@@ -916,12 +927,18 @@ async function estimateSnowline() {
     const fit = fitSnowline([...model, ...stationPts]);
     snow.fit = fit;
     if (fit.line === null) { text($('snow-status'), 'No snow data for this area; set the line by hand.'); return; }
-    if (!snow.manual) setSnowline(fit.line, false);
+    // No point has snow: the line is somewhere above the data. Draw no snow at all
+    // rather than snow from the highest sample upward.
+    const none = fit.method === 'no-snow';
+    if (!snow.manual) setSnowline(none ? NO_SNOW_LINE : fit.line, false);
     const t = model.find((s) => s.time);
     const when = t ? new Date(t.time).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'time unknown';
     const src = `${model.length} model points (MeteoSwiss ICON via Open-Meteo)${stationPts.length ? ` and ${stationPts.length} stations` : ''}`;
     const kept = snow.manual ? ` Your setting of ${$('snow-line').value} m is kept.` : '';
-    text($('snow-status'), `Estimate ${fit.line} m, ${when}. ${describeFit(fit)} Source: ${src}. An estimate, not a measurement.${kept}`);
+    const head = none
+      ? `No snow at any of the ${fit.n} points (highest ${Math.round(fit.maxElev)} m), ${when}: no snow line in the data, so the view draws none.`
+      : `Estimate ${fit.line} m, ${when}. ${describeFit(fit)}`;
+    text($('snow-status'), `${head} Source: ${src}. An estimate, not a measurement.${kept}`);
   } catch (err) {
     if (gen === areaGen) text($('snow-status'), `Snow line estimate failed (${err.message}); set it by hand.`);
   }
@@ -933,7 +950,12 @@ $('snow-toggle').onchange = () => {
   storage.setItem('sbd-snow', snow.on ? '1' : '0');
   // The snow view is made for the aerial image: rock and forest show through it.
   if (snow.on && basemapId !== 'image') { snow.previousBasemap = basemapId; setBasemap('image'); }
-  else if (!snow.on && snow.previousBasemap) { setBasemap(snow.previousBasemap); snow.previousBasemap = null; }
+  else if (!snow.on) {
+    // Go back only if the aerial image the snow view switched to is still showing;
+    // a base map the user picked in between stays.
+    if (snow.previousBasemap && basemapId === 'image') setBasemap(snow.previousBasemap);
+    snow.previousBasemap = null;
+  }
   applySnow();
 };
 $('snow-line').oninput = () => setSnowline(Number($('snow-line').value), true);
@@ -953,16 +975,19 @@ function fillAreaSelect() {
 // Loads everything that belongs to an area. The bulletin covers all of Switzerland and is
 // fetched once; only the region shown changes.
 async function loadAreaData() {
+  const gen = areaGen;
   resetHistory();
   if (state.bulletin) showBulletinFor(...centre(area));
   initSentinel();
   await initStations();
+  if (gen !== areaGen) return; // the area changed meanwhile; the newer load does the estimate
   await estimateSnowline();
 }
 
 function setArea(next, fly = true) {
   area = next;
   areaGen++;
+  state.stations = []; // the old area's stations must not enter the new area's estimate
   saveArea(storage, area);
   fillAreaSelect();
   snow.manual = false;

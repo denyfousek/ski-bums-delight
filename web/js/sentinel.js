@@ -59,8 +59,13 @@ export async function loadScene(scene, box, { maskClouds = false, classes = fals
   const rgb = await tiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true });
   let scl = null;
   if ((maskClouds || classes) && scene.sclHref) {
-    const sclTiff = await fromUrl(scene.sclHref);
-    scl = await sclTiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true, resampleMethod: 'nearest' });
+    try {
+      const sclTiff = await fromUrl(scene.sclHref);
+      scl = await sclTiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true, resampleMethod: 'nearest' });
+    } catch (err) {
+      if (maskClouds) throw err; // masking was asked for: fail as before
+      scl = null;                // classes are a bonus: the image still loads
+    }
   }
   let masked = 0;
   let valid = 0;

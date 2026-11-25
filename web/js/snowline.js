@@ -86,10 +86,15 @@ export function fitSnowline(samples, threshold = SNOW_THRESHOLD_M) {
   let best = cost;
   let bestFrom = 0;
   let bestTo = 0;
+  let lastCut = 0; // the last position where a cut was possible
   for (let k = 1; k <= s.length; k++) {
     const x = s[k - 1];
     cost += x.snowy ? x.weight : -x.weight * BARE;
-    if (cost < best - 1e-9) { best = cost; bestFrom = k; bestTo = k; } else if (Math.abs(cost - best) <= 1e-9) bestTo = k;
+    if (k < s.length && s[k].elevation === x.elevation) continue; // no line fits between two equal heights
+    // Equally good cuts only count as one range while they are neighbours; otherwise the
+    // middle of two separate optima could be a worse cut than either. The lowest range wins.
+    if (cost < best - 1e-9) { best = cost; bestFrom = k; bestTo = k; lastCut = k; } else if (Math.abs(cost - best) <= 1e-9 && bestTo === lastCut) bestTo = k;
+    lastCut = k;
   }
   const edge = (k) => (k === 0 ? minElev : k === s.length ? maxElev : (s[k - 1].elevation + s[k].elevation) / 2);
   const line = (edge(bestFrom) + edge(bestTo)) / 2;
@@ -124,8 +129,13 @@ export function snowlineFromClasses(points, bandM = 100, minPerBand = 5) {
   }
   const keys = [...bands.keys()].filter((k) => bands.get(k).n >= minPerBand).sort((a, b) => a - b);
   if (keys.length < 2) return { line: null, bands: keys.length, clear: 0 };
+  // Start at the highest band that is mostly snow: one thin, wind-blown or shaded band at
+  // the very top must not hide the snow below it.
+  const share = (k) => bands.get(k).snow / bands.get(k).n;
+  let top = keys.length - 1;
+  while (top >= 0 && share(keys[top]) < 0.5) top--;
   let line = null;
-  for (let i = keys.length - 1; i >= 0; i--) {
+  for (let i = top; i >= 0; i--) {
     const b = bands.get(keys[i]);
     if (b.snow / b.n >= 0.5) line = keys[i] * bandM; else break;
   }

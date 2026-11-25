@@ -9,6 +9,7 @@ notices an empty panel.
 """
 import json
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -226,7 +227,11 @@ def main():
     failed = 0
     for name, fn in CHECKS:
         try:
-            detail = fn()
+            try:
+                detail = fn()
+            except Exception:  # one retry: a single network hiccup is not a changed provider
+                time.sleep(20)
+                detail = fn()
             print("ok    %-34s %s" % (name, detail))
         except Exception as exc:  # every failure is reported, none stops the run
             failed += 1
