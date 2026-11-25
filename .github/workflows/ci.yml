@@ -1,0 +1,24 @@
+# Tests on every push and pull request: the Python server and the browser-free JS modules.
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Python tests (serve.py)
+        run: python -m unittest discover -s tests -v
+      - name: JS tests (proj, sun, shade, slope, bulletin, gpx, snowline, areas, stations)
+        run: node --test tests/js/*.test.mjs
+      - name: JS syntax of every module
+        run: for f in web/js/*.js web/sw.js; do node --check "$f"; done

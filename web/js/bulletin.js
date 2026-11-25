@@ -20,10 +20,36 @@ export const PROBLEMS = {
   no_distinct_avalanche_problem: 'No distinct avalanche problem',
 };
 
-export async function fetchBulletin() {
-  const res = await fetch(BULLETIN_URL);
+// Today's bulletin, or with `activeAt` (Date) the one that was valid at that moment.
+export async function fetchBulletin(activeAt = null) {
+  const url = activeAt ? `${BULLETIN_URL}?activeAt=${encodeURIComponent(activeAt.toISOString())}` : BULLETIN_URL;
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`Bulletin HTTP ${res.status}`);
   return res.json();
+}
+
+// Moments to ask the archive for: 10:00 UTC on each of the last `days` days before `now`
+// (late morning in Switzerland, when the day's bulletin is in force). Newest first.
+export function historyMoments(now, days = 7) {
+  const out = [];
+  for (let i = 1; i <= days; i++) {
+    out.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - i, 10, 0, 0)));
+  }
+  return out;
+}
+
+// Bulletins of the last days for one point. Failed or empty days come back with
+// properties: null, so the row still shows the date.
+export async function fetchHistory(lon, lat, now = new Date(), days = 7) {
+  return Promise.all(historyMoments(now, days).map(async (at) => {
+    try {
+      const geojson = await fetchBulletin(at);
+      const f = bulletinAt(geojson, lon, lat);
+      return { at, geojson, properties: f ? f.properties : null };
+    } catch (err) {
+      return { at, geojson: null, properties: null, error: err.message };
+    }
+  }));
 }
 
 export function maxLevel(props) {
@@ -47,15 +73,33 @@ export function elevationBound(v) {
 }
 
 // Rules a slope cell is tested against: aspects + elevation band per avalanche problem.
+// A problem published without an aspect list applies to all aspects (the panel says so too).
+const ALL_ASPECTS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+// "No distinct avalanche problem" only counts where the bulletin names aspects for it.
 export function criticalRules(props) {
   return (props.avalancheProblems || [])
-    .filter((p) => p.problemType !== 'favourable_situation' && (p.aspects || []).length)
+    .filter((p) => p.problemType !== 'favourable_situation'
+      && (p.problemType !== 'no_distinct_avalanche_problem' || (p.aspects || []).length))
     .map((p) => ({
       type: p.problemType,
-      aspects: new Set(p.aspects),
+      aspects: new Set((p.aspects || []).length ? p.aspects : ALL_ASPECTS),
       lower: elevationBound(p.elevation && p.elevation.lowerBound),
       upper: elevationBound(p.elevation && p.elevation.upperBound),
     }));
+}
+
+// Returns rulesAt(lon, lat) -> rules of the bulletin region at that point, or null outside
+// every region. Remembers the last region hit, since neighbouring points share it.
+export function rulesLookup(geojson) {
+  const cache = new Map();
+  let last = null;
+  return (lon, lat) => {
+    const f = last && pointInGeometry(lon, lat, last.geometry) ? last : bulletinAt(geojson, lon, lat);
+    if (!f) return null;
+    last = f;
+    if (!cache.has(f)) cache.set(f, criticalRules(f.properties));
+    return cache.get(f);
+  };
 }
 
 export function stripHtml(html) {

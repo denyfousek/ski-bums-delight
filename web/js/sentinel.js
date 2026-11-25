@@ -38,7 +38,7 @@ export async function searchScenes(box, days = 21) {
 const CLOUD_CLASSES = new Set([0, 1, 3, 8, 9, 10]);
 
 // Returns { canvas, west, south, east, north, masked } for the box, or throws.
-export async function loadScene(scene, box, { maskClouds = false, maxPx = 2400 } = {}) {
+export async function loadScene(scene, box, { maskClouds = false, classes = false, maxPx = 2400 } = {}) {
   const epsg = scene.epsg;
   if (!(epsg >= 32601 && epsg <= 32660)) throw new Error(`Unsupported projection EPSG:${epsg}`);
   const zone = epsg - 32600;
@@ -58,7 +58,7 @@ export async function loadScene(scene, box, { maskClouds = false, maxPx = 2400 }
   const tiff = await fromUrl(scene.href);
   const rgb = await tiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true });
   let scl = null;
-  if (maskClouds && scene.sclHref) {
+  if ((maskClouds || classes) && scene.sclHref) {
     const sclTiff = await fromUrl(scene.sclHref);
     scl = await sclTiff.readRasters({ bbox: [bx0, by0, bx1, by1], width: w, height: h, interleave: true, resampleMethod: 'nearest' });
   }
@@ -85,10 +85,20 @@ export async function loadScene(scene, box, { maskClouds = false, maxPx = 2400 }
       const o = (j * W + i) * 4;
       if (rgb[k] === 0 && rgb[k + 1] === 0 && rgb[k + 2] === 0) continue; // no data
       valid++;
-      if (scl && CLOUD_CLASSES.has(scl[r * w + c])) { masked++; continue; }
+      if (maskClouds && scl && CLOUD_CLASSES.has(scl[r * w + c])) { masked++; continue; }
       px[o] = rgb[k]; px[o + 1] = rgb[k + 1]; px[o + 2] = rgb[k + 2]; px[o + 3] = 255;
     }
   }
   ctx.putImageData(img, 0, 0);
-  return { canvas, ...box, masked: valid ? masked / valid : 0, maskApplied: Boolean(scl) };
+  // classAt(lon, lat): 'snow' (SCL 11), 'ground' (vegetation 4, bare soil 5) or null for
+  // everything that says nothing about snow (cloud, shadow, water, no data).
+  const classAt = scl ? (lon, lat) => {
+    const [x, y] = wgsToUtm(lon, lat, zone);
+    const c = Math.floor(((x - bx0) / (bx1 - bx0)) * w);
+    const r = Math.floor(((by1 - y) / (by1 - by0)) * h);
+    if (c < 0 || r < 0 || c >= w || r >= h) return null;
+    const v = scl[r * w + c];
+    return v === 11 ? 'snow' : (v === 4 || v === 5 ? 'ground' : null);
+  } : null;
+  return { canvas, ...box, masked: valid ? masked / valid : 0, maskApplied: Boolean(scl) && maskClouds, classAt };
 }

@@ -69,7 +69,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         # Always revalidate: otherwise browsers mix cached and new ES modules after an update.
-        if not self.path.startswith("/proxy/"):
+        # A malformed request line is rejected before self.path exists.
+        if not getattr(self, "path", "").startswith("/proxy/"):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 

@@ -78,5 +78,28 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(status, 404)
 
 
+
+class MalformedRequestTest(unittest.TestCase):
+    def test_bad_request_line_gets_an_error_page_not_a_dropped_connection(self):
+        import socket
+        server = serve.make_server(0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as sock:
+                sock.sendall(b"GET / FOO/9.9\r\n\r\n")
+                answer = b""
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    answer += chunk
+            # http.server answers such a line in HTTP/0.9 style: an error page, no status line.
+            self.assertIn(b"Error code: 400", answer)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,9 +1,16 @@
 // Ski Bum's Delight — wiring of viewer, layers and panels.
 import {
-  AREA, HOME_VIEW, TERRAIN_URL, BASEMAPS, OVERLAYS, IDENTIFY_LAYERS, IDENTIFY_URL,
+  TERRAIN_URL, BASEMAPS, OVERLAYS, IDENTIFY_LAYERS, IDENTIFY_URL,
   ANALYSIS_SIZE_M, wmtsUrl, SWISSIMAGE_YEARS,
 } from './config.js';
-import { fetchBulletin, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, PROBLEMS } from './bulletin.js';
+import {
+  PRESETS, SWITZERLAND, centre, boxAround, homeView, inSwitzerland, loadArea, saveArea,
+} from './areas.js';
+import {
+  fetchBulletin, fetchHistory, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, rulesLookup, maxLevel, PROBLEMS,
+} from './bulletin.js';
+import { fetchModelSnow, stationSamples, fitSnowline, snowlineFromClasses, describeFit } from './snowline.js';
+import { createSnowMaterial, recentreSnowMaterial } from './snowlook.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
 import { loadForestMask } from './forest.js';
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
@@ -13,10 +20,24 @@ import { sunPosition, sunTimes } from './sun.js';
 import {
   SHADE_CORE_M, SHADE_MARGIN_M, SHADE_CELL_M, gridAzimuth, computeShade, buildPixelMap, renderShade, shadeAt, CAST, AWAY, NIGHT,
 } from './shade.js';
-import { parseGpx, resample, terrainSlopes, stats, wildlifeZonesOnRoute, drawProfile } from './gpx.js';
+import {
+  parseGpx, resample, terrainSlopes, stats, routeCheck, wildlifeZonesOnRoute, drawProfile, CHECK_COLORS, GREEN, YELLOW, RED,
+} from './gpx.js';
 
 const $ = (id) => document.getElementById(id);
-const state = { bulletin: null, bulletinDs: null, slopeLayer: null, slopeGrid: null, s2Layer: null, gpx: null, stationsDs: null };
+const state = { bulletin: null, bulletinDs: null, slopeLayer: null, slopeGrid: null, s2Layer: null, gpx: [], stationsDs: null, stations: [] };
+
+// localStorage can throw (private window, blocked site data); settings are then just not kept.
+const storage = {
+  getItem(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  setItem(k, v) { try { localStorage.setItem(k, v); } catch { /* not remembered */ } },
+};
+let area = loadArea(storage);
+const MOBILE = window.matchMedia('(max-width: 760px), (pointer: coarse)').matches;
+// Snow view. `manual` is set once the user moves the slider; an estimate no longer moves it then.
+const snow = { on: storage.getItem('sbd-snow') !== '0', material: null, manual: false, fit: null, previousBasemap: null };
+// Every area change gets a number; answers of requests started for an older area are dropped.
+let areaGen = 0;
 
 function text(el, s) { el.textContent = s; }
 
@@ -40,6 +61,21 @@ globe.maximumScreenSpaceError = 1.5;
 viewer.scene.fog.screenSpaceErrorFactor = 0.25;
 globe.tileCacheSize = 1000;
 globe.preloadSiblings = true;
+if (MOBILE) {
+  // Phones: fewer and coarser tiles, less memory.
+  globe.maximumScreenSpaceError = 2.5;
+  viewer.scene.fog.screenSpaceErrorFactor = 1;
+  globe.tileCacheSize = 250;
+  globe.preloadSiblings = false;
+}
+// Cap the render resolution: a phone with a 3x screen would otherwise shade nine times
+// the pixels of its CSS size. 1.5x on phones and 2x on desktops is visually enough.
+function capResolution() {
+  const dpr = window.devicePixelRatio || 1;
+  viewer.resolutionScale = Math.min(1, (MOBILE ? 1.5 : 2) / dpr);
+}
+capResolution();
+window.addEventListener('resize', capResolution);
 // Brightness under terrain shading: Cesium multiplies the image by Lambert × 0.9 + 0.3,
 // so flat ground under a 24° winter sun ended up at ~67 %. Stronger direct light and a
 // brighter shadow floor keep flat ground near full brightness and slopes away from the
@@ -48,12 +84,11 @@ globe.lambertDiffuseMultiplier = 1.5;
 globe.vertexShadowDarkness = 0.5;
 viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#e9e4d6');
 viewer.creditDisplay.addStaticCredit(new Cesium.Credit('© swisstopo', true));
-text($('area-name'), `Test area: ${AREA.name}`);
-
 function flyHome(duration = 0) {
+  const v = homeView(area);
   viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(HOME_VIEW.lon, HOME_VIEW.lat, HOME_VIEW.height),
-    orientation: { heading: Cesium.Math.toRadians(HOME_VIEW.heading), pitch: Cesium.Math.toRadians(HOME_VIEW.pitch), roll: 0 },
+    destination: Cesium.Cartesian3.fromDegrees(v.lon, v.lat, v.height),
+    orientation: { heading: Cesium.Math.toRadians(v.heading), pitch: Cesium.Math.toRadians(v.pitch), roll: 0 },
     duration,
   });
 }
@@ -63,7 +98,7 @@ function wmtsProvider(def, time) {
   return new Cesium.UrlTemplateImageryProvider({
     url: wmtsUrl(def.layer, def.ext, time),
     maximumLevel: def.maxLevel,
-    rectangle: Cesium.Rectangle.fromDegrees(5.9, 45.8, 10.5, 47.85), // Switzerland; tiles outside return 400
+    rectangle: Cesium.Rectangle.fromDegrees(SWITZERLAND.west, SWITZERLAND.south, SWITZERLAND.east, SWITZERLAND.north), // tiles outside return 400
     credit: new Cesium.Credit(def.layer.startsWith('ch.bafu') ? 'BAFU' : '© swisstopo'),
   });
 }
@@ -126,14 +161,19 @@ viewer.shadowMap.softShadows = true;
 viewer.shadowMap.darkness = 0.45;
 
 function sunPlace() {
-  const c = viewCenter();
-  return c || [(AREA.west + AREA.east) / 2, (AREA.south + AREA.north) / 2];
+  return viewCenter() || centre(area);
 }
 
+// An emptied date field falls back to today instead of producing an invalid date.
 function selectedDate() {
   const [y, m, d] = $('sun-date').value.split('-').map(Number);
   const mins = Number($('sun-time').value);
-  return new Date(y, m - 1, d, Math.floor(mins / 60), mins % 60);
+  const date = new Date(y, m - 1, d, Math.floor(mins / 60), mins % 60);
+  if (Number.isNaN(date.getTime())) {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Math.floor(mins / 60), mins % 60);
+  }
+  return date;
 }
 
 function setDateInputs(date) {
@@ -182,6 +222,7 @@ function updateSun() {
   text($('el-out'), `${$('sun-el').value}°`);
   viewer.scene.globe.enableLighting = lightOn;
   viewer.scene.globe.dynamicAtmosphereLighting = false;
+  if (snow.material) snow.material.uniforms.selfShade = lightOn ? 0 : 1;
   const shadows = lightOn && $('sun-shadows').checked && Number($('sun-el').value) > 0;
   viewer.shadows = shadows;
   viewer.terrainShadows = shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
@@ -189,7 +230,7 @@ function updateSun() {
 }
 
 // ---------- sun & shade map ----------
-const shadeState = { grid: null, map: null, layer: null, busy: false, again: false, last: null };
+const shadeState = { grid: null, map: null, layer: null, busy: false, again: false, last: null, key: '' };
 
 function shadeSun() {
   const g = shadeState.grid;
@@ -209,6 +250,10 @@ async function paintShade() {
     do {
       shadeState.again = false;
       const s = shadeSun();
+      // Camera moves call this too; the map only changes when the sun does.
+      const key = `${s.az.toFixed(2)}/${s.el.toFixed(2)}`;
+      if (key === shadeState.key && shadeState.layer) break;
+      shadeState.key = key;
       const shade = computeShade(shadeState.grid, s.az, s.el);
       shadeState.last = shade;
       const out = renderShade(shadeState.map, shade);
@@ -245,6 +290,7 @@ $('shade-run').onclick = async () => {
     const grid = await loadDem(c[0], c[1], SHADE_CORE_M + 2 * SHADE_MARGIN_M,
       (d, n) => text($('shade-status'), `Loading elevation tiles ${d}/${n}…`), SHADE_CELL_M, 16);
     shadeState.grid = { ...grid, lon: c[0], lat: c[1] };
+    shadeState.key = '';
     shadeState.map = buildPixelMap(grid, c[0], c[1]);
     shadeState.loadMs = performance.now() - t0;
     await paintShade();
@@ -256,7 +302,7 @@ $('shade-run').onclick = async () => {
 };
 $('shade-clear').onclick = () => {
   if (shadeState.layer) viewer.imageryLayers.remove(shadeState.layer, true);
-  Object.assign(shadeState, { grid: null, map: null, layer: null, last: null });
+  Object.assign(shadeState, { grid: null, map: null, layer: null, last: null, key: '' });
   text($('shade-status'), '');
 };
 
@@ -279,12 +325,15 @@ updateSun();
 viewer.camera.moveEnd.addEventListener(() => updateSun());
 
 // ---------- bulletin ----------
-const areaLon = (AREA.west + AREA.east) / 2;
-const areaLat = (AREA.south + AREA.north) / 2;
+function showBulletinFor(lon, lat) {
+  $('history-note').hidden = true;
+  for (const b of $('history-row').children) b.classList.remove('on');
+  renderBulletin($('bulletin'), state.bulletin ? (bulletinAt(state.bulletin, lon, lat) || {}).properties || null : null);
+}
 async function initBulletin() {
   try {
     state.bulletin = await fetchBulletin();
-    renderBulletin($('bulletin'), (bulletinAt(state.bulletin, areaLon, areaLat) || {}).properties || null);
+    showBulletinFor(...centre(area));
     state.bulletinDs = await addBulletinLayer(viewer, state.bulletin);
     state.bulletinDs.show = $('bulletin-toggle').checked;
   } catch (err) {
@@ -293,12 +342,63 @@ async function initBulletin() {
 }
 $('bulletin-toggle').onchange = () => { if (state.bulletinDs) state.bulletinDs.show = $('bulletin-toggle').checked; };
 
+// History: the SLF API returns the bulletin valid at a given moment (?activeAt=).
+function resetHistory() {
+  $('history-row').replaceChildren();
+  $('history-note').hidden = true;
+  $('history-load').hidden = false;
+  text($('history-status'), '');
+}
+$('history-load').onclick = async () => {
+  const gen = areaGen;
+  const [lon, lat] = centre(area);
+  $('history-load').disabled = true;
+  text($('history-status'), 'Loading the last 7 days…');
+  try {
+    const days = await fetchHistory(lon, lat);
+    if (gen !== areaGen) return;
+    const row = $('history-row');
+    row.replaceChildren();
+    for (const d of days.reverse()) {
+      const lvl = d.properties ? maxLevel(d.properties) : null;
+      const b = document.createElement('button');
+      b.className = 'day';
+      const sw = document.createElement('i');
+      sw.style.background = lvl ? lvl.color : 'transparent';
+      const label = d.at.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' });
+      b.append(sw, document.createTextNode(`${label} · ${lvl ? lvl.n : '–'}`));
+      b.title = lvl ? lvl.label : (d.error || 'No bulletin for this day');
+      b.disabled = !d.properties;
+      b.onclick = () => {
+        for (const x of row.children) x.classList.toggle('on', x === b);
+        renderBulletin($('bulletin'), d.properties);
+        const day = d.at.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+        text($('history-text'), `Showing the bulletin of ${day} for the area centre. Critical slopes and the route check always use the current one.`);
+        $('history-note').hidden = false;
+      };
+      row.append(b);
+    }
+    const found = days.filter((d) => d.properties).length;
+    text($('history-status'), found ? 'Highest danger level per day at the area centre. Tap a day to read it.' : 'No bulletins in the last 7 days (outside the season SLF publishes none).');
+    $('history-load').hidden = true;
+  } catch (err) {
+    text($('history-status'), `History failed: ${err.message}`);
+  } finally {
+    $('history-load').disabled = false;
+  }
+};
+$('history-today').onclick = () => showBulletinFor(...centre(area));
+
 // ---------- stations ----------
 async function initStations() {
-  const [imis, ms] = await Promise.allSettled([fetchImis(AREA), fetchMeteoSwissSnow(AREA)]);
+  const gen = areaGen;
+  const el = $('stations');
+  text(el, 'Loading…');
+  const [imis, ms] = await Promise.allSettled([fetchImis(area), fetchMeteoSwissSnow(area)]);
+  if (gen !== areaGen) return;
   const list = [...(imis.status === 'fulfilled' ? imis.value : []), ...(ms.status === 'fulfilled' ? ms.value : [])]
     .sort((a, b) => b.elevation - a.elevation);
-  const el = $('stations');
+  state.stations = list;
   el.replaceChildren();
   for (const s of list) {
     const row = document.createElement('div');
@@ -306,15 +406,19 @@ async function initStations() {
     const b = document.createElement('b');
     b.textContent = `${s.name} (${Math.round(s.elevation)} m)`;
     const parts = [];
-    if (s.snowCm !== null) {
+    if (s.snowCm != null) {
       let t = `snow ${Math.round(s.snowCm)} cm`;
-      if (s.snowChange24h !== null && s.snowChange24h !== undefined && Math.abs(s.snowChange24h) >= 1) {
+      if (s.snowChange24h != null && Math.abs(s.snowChange24h) >= 1) {
         t += ` (${s.snowChange24h > 0 ? '+' : ''}${Math.round(s.snowChange24h)} in 24 h)`;
       }
       parts.push(t);
     }
-    if (s.windKmh !== null && s.windKmh !== undefined) parts.push(`wind ${Math.round(s.windKmh)} km/h ${compass(s.windDir)}, gusts ${Math.round(s.gustKmh)}`);
-    if (s.airC !== null && s.airC !== undefined) parts.push(`${s.airC.toFixed(1)} °C`);
+    if (s.windKmh != null) {
+      let t = `wind ${Math.round(s.windKmh)} km/h ${compass(s.windDir)}`.trim();
+      if (s.gustKmh != null) t += `, gusts ${Math.round(s.gustKmh)}`;
+      parts.push(t);
+    }
+    if (s.airC != null) parts.push(`${s.airC.toFixed(1)} °C`);
     const when = s.time ? new Date(s.time).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
     row.append(b, document.createElement('br'), document.createTextNode(`${parts.join(' · ') || 'no current values'} — ${s.source} ${when}`));
     el.append(row);
@@ -329,7 +433,8 @@ async function initStations() {
       : 'SLF stations (IMIS) only in the local version; showing MeteoSwiss stations.';
     el.prepend(warn);
   }
-  if (!list.length && imis.status === 'fulfilled') text(el, 'No stations in this area.');
+  if (!list.length) el.append(document.createTextNode('No stations in this area.'));
+  if (state.stationsDs) viewer.dataSources.remove(state.stationsDs, true);
   state.stationsDs = addStationEntities(viewer, list);
   state.stationsDs.show = $('stations-toggle').checked;
 }
@@ -369,35 +474,41 @@ function legend(items) {
   }
 }
 
+let slopePaint = 0;
 async function paintSlope() {
   const g = state.slopeGrid;
+  const turn = ++slopePaint;
   const cLon = (g.west + g.east) / 2;
   const cLat = (g.south + g.north) / 2;
   const b = state.bulletin ? bulletinAt(state.bulletin, cLon, cLat) : null;
   const rules = b ? criticalRules(b.properties) : [];
-  if (slopeMode === 'critical' && !b) {
-    text($('slope-status'), 'No bulletin for this point — showing slope classes instead.');
-  }
   const mode = slopeMode === 'critical' && b ? 'critical' : 'classes';
   const forestOn = $('slope-forest').checked && Boolean(g.forest);
   const out = renderOverlay(g, mode, rules, forestOn);
-  if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
   const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/png'), {
     rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
   });
+  // A newer paint or "Clear" happened while the image was decoding: drop this one.
+  if (turn !== slopePaint || state.slopeGrid !== g) return;
+  if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
   state.slopeLayer = viewer.imageryLayers.addImageryProvider(provider);
+  const notes = [];
+  if (g.failedTiles) notes.push(`${g.failedTiles} elevation tile(s) could not be read; those squares are empty.`);
+  if (g.forestError) notes.push(`Forest data unavailable (${g.forestError}).`);
   if (mode === 'critical') {
     const items = [['rgba(200,16,46,.75)', 'critical ≥ 30°'], ['rgba(90,90,90,.35)', '≥ 30°, not named in bulletin']];
     if (forestOn) items.splice(1, 0, ['rgba(30,120,60,.6)', 'would be critical, but in closed forest']);
     legend(items);
-    const names = rules.map((r) => PROBLEMS[r.type] || r.type).join(', ') || 'no aspect-specific problem';
+    const names = rules.map((r) => PROBLEMS[r.type] || r.type).join(', ') || 'no problem with a location';
+    const region = (b.properties.regions || []).map((r) => r.name).slice(0, 2).join(', ');
     const pct = (n) => (out.steep ? Math.round((n / out.steep) * 100) : 0);
-    let msg = `Rules from bulletin: ${names}. ${pct(out.critical)} % of the slopes ≥ 30° in this square match.`;
+    let msg = `Rules from the bulletin for ${region || 'the square centre'} (applied to the whole square): ${names}. ${pct(out.critical)} % of the slopes ≥ 30° match.`;
     if (forestOn) msg += ` Another ${pct(out.forested)} % match but lie in closed forest.`;
-    if (g.forestError) msg += ` Forest data unavailable (${g.forestError}).`;
-    text($('slope-status'), msg);
+    text($('slope-status'), [msg, ...notes].join(' '));
   } else {
     legend([['#f5d400', '30–35°'], ['#f08a00', '35–40°'], ['#d7191c', '40–45°'], ['#8e2bb0', '≥ 45°']]);
+    const why = slopeMode === 'critical' ? 'No bulletin for this point — showing slope classes instead.' : 'Slope classes from swissALTI3D (4 m).';
+    text($('slope-status'), [why, ...notes].join(' '));
   }
 }
 
@@ -430,6 +541,7 @@ $('slope-run').onclick = async () => {
   }
 };
 $('slope-clear').onclick = () => {
+  slopePaint++;
   if (state.slopeLayer) viewer.imageryLayers.remove(state.slopeLayer, true);
   state.slopeLayer = null;
   state.slopeGrid = null;
@@ -440,17 +552,25 @@ $('slope-clear').onclick = () => {
 // ---------- Sentinel-2 ----------
 let scenes = [];
 async function initSentinel() {
+  const gen = areaGen;
+  const sel = $('s2-scenes');
+  sel.replaceChildren(new Option('Searching…'));
+  text($('s2-status'), '');
+  $('s2-snow').hidden = true;
+  if (state.s2Layer) { viewer.imageryLayers.remove(state.s2Layer, true); state.s2Layer = null; }
   try {
-    scenes = await searchScenes(AREA);
-    const sel = $('s2-scenes');
+    let found = await searchScenes(area);
+    if (gen !== areaGen) return;
     sel.replaceChildren();
-    if (!scenes.length) {
+    if (!found.length) {
+      scenes = [];
       sel.append(new Option('No scenes in the last 3 weeks'));
       return;
     }
     // Earth Search may list the same acquisition twice (processing versions); keep the newest per date.
     const seen = new Set();
-    scenes = scenes.filter((s) => { const k = s.date.slice(0, 10); if (seen.has(k)) return false; seen.add(k); return true; });
+    found = found.filter((s) => { const k = s.date.slice(0, 10); if (seen.has(k)) return false; seen.add(k); return true; });
+    scenes = found;
     scenes.forEach((s, i) => {
       const d = new Date(s.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
       sel.append(new Option(`${d} · ${Math.round(s.cloud)} % cloud (whole tile)`, String(i)));
@@ -458,27 +578,66 @@ async function initSentinel() {
     const clearest = scenes.reduce((best, s, i) => (s.cloud < scenes[best].cloud ? i : best), 0);
     sel.value = String(clearest);
   } catch (err) {
-    text($('s2-status'), `Scene search failed: ${err.message}`);
+    if (gen === areaGen) text($('s2-status'), `Scene search failed: ${err.message}`);
   }
 }
+
+// Snow line seen by the satellite: classify a grid of points (snow / snow-free ground) and
+// look at the share of snow per 100 m elevation band.
+async function sceneSnowline(out) {
+  const n = 26;
+  const pts = [];
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const lon = out.west + ((i + 0.5) / n) * (out.east - out.west);
+      const lat = out.south + ((j + 0.5) / n) * (out.north - out.south);
+      const cls = out.classAt(lon, lat);
+      if (cls) pts.push({ lon, lat, cls });
+    }
+  }
+  if (pts.length < 30) return { line: null, clear: pts.length };
+  const carto = pts.map((q) => Cesium.Cartographic.fromDegrees(q.lon, q.lat));
+  await Cesium.sampleTerrain(terrainProvider, 11, carto);
+  return snowlineFromClasses(pts.map((q, i) => ({ elevation: carto[i].height, cls: q.cls })));
+}
+
 $('s2-load').onclick = async () => {
   const s = scenes[Number($('s2-scenes').value)];
   if (!s) return;
+  const gen = areaGen;
   $('s2-load').disabled = true;
+  $('s2-snow').hidden = true;
   text($('s2-status'), 'Loading 10 m true colour for the area…');
   try {
-    const out = await loadScene(s, AREA, { maskClouds: $('s2-mask').checked });
+    const out = await loadScene(s, area, { maskClouds: $('s2-mask').checked, classes: true });
+    if (gen !== areaGen) return;
     if (state.s2Layer) viewer.imageryLayers.remove(state.s2Layer, true);
     const provider = await Cesium.SingleTileImageryProvider.fromUrl(out.canvas.toDataURL('image/jpeg', 0.9), {
       rectangle: Cesium.Rectangle.fromDegrees(out.west, out.south, out.east, out.north),
       credit: new Cesium.Credit('Contains modified Copernicus Sentinel data'),
     });
+    if (gen !== areaGen) return;
     state.s2Layer = viewer.imageryLayers.addImageryProvider(provider, 1);
     state.s2Layer.alpha = Number($('s2-alpha').value) / 100;
+    const day = new Date(s.date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
     const maskNote = out.maskApplied
       ? `${Math.round(out.masked * 100)} % hidden as cloud or cloud shadow (the classifier can mistake snow for cloud).`
       : 'Clouds look like snow — compare with the national map.';
-    text($('s2-status'), `Showing ${new Date(s.date).toLocaleDateString('en-GB')}. ${maskNote}`);
+    let msg = `Showing ${day}. ${maskNote}`;
+    if (snow.on) msg += ' The snow view covers it above the snow line; lower the opacity there or switch it off to see the image.';
+    text($('s2-status'), msg);
+    if (out.classAt) {
+      try {
+        const sl = await sceneSnowline(out);
+        if (gen !== areaGen) return;
+        if (sl.line !== null) {
+          const where = sl.above ? 'above' : (sl.below ? 'at or below' : 'around');
+          text($('s2-snow-text'), `Snow line in this scene (${day}): ${where} ${sl.line} m, from ${sl.clear} cloud-free points.`);
+          $('s2-snow-use').onclick = () => setSnowline(sl.line, true, `Sentinel-2 scene of ${day}`);
+          $('s2-snow').hidden = false;
+        }
+      } catch { /* the image is shown either way */ }
+    }
   } catch (err) {
     text($('s2-status'), `Could not load scene: ${err.message}`);
   } finally {
@@ -488,47 +647,67 @@ $('s2-load').onclick = async () => {
 $('s2-alpha').oninput = () => { if (state.s2Layer) state.s2Layer.alpha = Number($('s2-alpha').value) / 100; };
 
 // ---------- GPX ----------
+let gpxTurn = 0;
+function clearGpx() {
+  for (const e of state.gpx) viewer.entities.remove(e);
+  state.gpx = [];
+}
 async function loadGpxText(textContent) {
+  const turn = ++gpxTurn;
   const out = $('gpx-stats');
   out.replaceChildren();
   $('gpx-zones').replaceChildren();
+  $('gpx-check').replaceChildren();
   try {
     const gpx = parseGpx(textContent);
     text(out, 'Analysing route…');
     let pts = resample(gpx.points, 20);
     if (pts.length > 3000) pts = resample(gpx.points, Math.ceil(pts[pts.length - 1].dist / 3000));
     pts = await terrainSlopes(terrainProvider, pts);
+    if (turn !== gpxTurn) return; // a newer file was dropped meanwhile
     pts = pts.map((p) => ({ ...p, z: p.ele != null ? p.ele : p.terrainEle }));
     if (state.slopeGrid) {
-      pts = pts.map((p) => { const c = sampleGrid(state.slopeGrid, p.lon, p.lat); return c && Number.isFinite(c.slope) ? { ...p, slope: c.slope } : p; });
+      pts = pts.map((p) => {
+        const c = sampleGrid(state.slopeGrid, p.lon, p.lat);
+        return c && Number.isFinite(c.slope) ? { ...p, slope: c.slope, aspect: c.aspect } : p;
+      });
     }
     const st = stats(pts);
-    if (state.gpx) viewer.entities.remove(state.gpx);
-    state.gpx = viewer.entities.add({
-      polyline: {
-        positions: Cesium.Cartesian3.fromDegreesArray(pts.flatMap((p) => [p.lon, p.lat])),
-        width: 4,
-        material: new Cesium.PolylineOutlineMaterialProperty({ color: Cesium.Color.fromCssColorString('#c8102e'), outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5 }),
-        clampToGround: true,
-      },
-    });
+    const check = routeCheck(pts, state.bulletin ? rulesLookup(state.bulletin) : null);
+
+    clearGpx();
+    for (const sec of check.sections) {
+      const part = check.points.slice(Math.max(0, sec.from - 1), sec.to + 1);
+      if (part.length < 2) continue;
+      state.gpx.push(viewer.entities.add({
+        polyline: {
+          positions: Cesium.Cartesian3.fromDegreesArray(part.flatMap((p) => [p.lon, p.lat])),
+          width: 5,
+          material: new Cesium.PolylineOutlineMaterialProperty({ color: Cesium.Color.fromCssColorString(CHECK_COLORS[sec.check]), outlineColor: Cesium.Color.WHITE, outlineWidth: 1.5 }),
+          clampToGround: true,
+        },
+      }));
+    }
     viewer.flyTo(state.gpx, { duration: 1.2, offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-40), 0) });
 
+    const m = (v) => (Number.isFinite(v) ? `${Math.round(v)}` : '?');
     const dl = document.createElement('dl');
     dl.className = 'kv';
     const add = (k, v) => { const dt = document.createElement('dt'); dt.textContent = k; const dd = document.createElement('dd'); dd.textContent = v; dl.append(dt, dd); };
     add('Route', gpx.name);
     add('Distance', `${(st.distance / 1000).toFixed(1)} km`);
-    add('Ascent / descent', `${Math.round(st.up)} m / ${Math.round(st.down)} m`);
-    add('Lowest / highest', `${Math.round(st.minZ)} m / ${Math.round(st.maxZ)} m`);
-    add('Terrain ≥ 30°', `${Math.round(st.steepShare * 100)} % of the route (max ${Math.round(st.maxSlope)}°)`);
+    add('Ascent / descent', `${m(st.up)} m / ${m(st.down)} m (changes under 5 m ignored)`);
+    add('Lowest / highest', `${m(st.minZ)} m / ${m(st.maxZ)} m`);
+    add('Terrain ≥ 30°', `${Math.round(st.steepShare * 100)} % of the route (max ${m(st.maxSlope)}°)`);
     add('Slope source', state.slopeGrid ? 'swissALTI3D where analysed, else 3D terrain' : 'swisstopo 3D terrain (±15 m)');
     out.replaceChildren(dl);
 
     $('gpx-profile').hidden = false;
-    drawProfile($('gpx-profile'), pts);
+    drawProfile($('gpx-profile'), check.points, check.sections);
+    renderRouteCheck(check);
 
     const zones = await wildlifeZonesOnRoute(pts);
+    if (turn !== gpxTurn) return;
     const zEl = $('gpx-zones');
     if (!zones.length) text(zEl, 'No wildlife rest zone or protection area on this route.');
     for (const z of zones) {
@@ -538,9 +717,52 @@ async function loadGpxText(textContent) {
       zEl.append(d);
     }
   } catch (err) {
-    text(out, `GPX failed: ${err.message}`);
+    if (turn === gpxTurn) text(out, `GPX failed: ${err.message}`);
   }
 }
+
+function renderRouteCheck(check) {
+  const el = $('gpx-check');
+  el.replaceChildren();
+  const pct = (v) => `${Math.round(v * 100)} %`;
+  const head = document.createElement('div');
+  head.className = 'lights';
+  for (const [key, label] of [[GREEN, 'below 30°'], [YELLOW, '30° or steeper'], [RED, 'steep and named in the bulletin']]) {
+    const s = document.createElement('span');
+    const i = document.createElement('i');
+    i.style.background = CHECK_COLORS[key];
+    s.append(i, document.createTextNode(`${pct(check.share[key])} ${label}`));
+    head.append(s);
+  }
+  el.append(head);
+  if (!state.bulletin) {
+    const n = document.createElement('div');
+    n.className = 'muted';
+    n.textContent = 'No bulletin loaded: steep sections cannot be compared with it, so none is red.';
+    el.append(n);
+  }
+  const rows = check.sections.filter((s) => s.check === RED || s.check === YELLOW);
+  const shown = rows.slice(0, 14);
+  for (const s of shown) {
+    const d = document.createElement('div');
+    d.className = 'section';
+    const i = document.createElement('i');
+    i.style.background = CHECK_COLORS[s.check];
+    const lo = Math.round(s.minZ);
+    const hi = Math.round(s.maxZ);
+    const elev = Number.isFinite(s.minZ) ? ` · ${lo === hi ? lo : `${lo}–${hi}`} m` : '';
+    const len = (s.toKm - s.fromKm) * 1000;
+    const where = len < 100 ? `km ${s.fromKm.toFixed(1)} (${Math.max(20, Math.round(len / 10) * 10)} m)` : `km ${s.fromKm.toFixed(1)}–${s.toKm.toFixed(1)}`;
+    d.append(i, document.createTextNode(`${where} · up to ${Math.round(s.maxSlope)}° ${s.aspect}${elev}`));
+    el.append(d);
+  }
+  if (rows.length > shown.length) el.append(document.createTextNode(`… and ${rows.length - shown.length} more steep sections.`));
+  const note = document.createElement('p');
+  note.className = 'muted';
+  note.textContent = 'Checked is the ground under the track only. Slopes above or below it, where an avalanche can start or run out, are not part of this check.';
+  el.append(note);
+}
+
 const drop = $('gpx-drop');
 drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -595,8 +817,10 @@ function describe(f) {
   }
 }
 
+let clickTurn = 0;
 const clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
 clickHandler.setInputAction(async (ev) => {
+  const turn = ++clickTurn;
   const ray = viewer.camera.getPickRay(ev.position);
   const pos = viewer.scene.globe.pick(ray, viewer.scene) || viewer.camera.pickEllipsoid(ev.position);
   if (!pos) return;
@@ -609,6 +833,7 @@ clickHandler.setInputAction(async (ev) => {
   let h = viewer.scene.globe.getHeight(c);
   if (!h) {
     try { [h] = (await Cesium.sampleTerrainMostDetailed(terrainProvider, [Cesium.Cartographic.fromRadians(c.longitude, c.latitude)])).map((x) => x.height); } catch { h = null; }
+    if (turn !== clickTurn) return;
   }
   let headText = `${lat.toFixed(5)}, ${lon.toFixed(5)} · ${h ? Math.round(h) : '?'} m`;
   if (state.slopeGrid) {
@@ -623,16 +848,16 @@ clickHandler.setInputAction(async (ev) => {
   head.textContent = headText;
   info.append(head);
 
-  if (state.bulletin) {
-    const b = bulletinAt(state.bulletin, lon, lat);
-    if (b) renderBulletin($('bulletin'), b.properties);
-  }
+  if (state.bulletin && bulletinAt(state.bulletin, lon, lat)) showBulletinFor(lon, lat);
 
   $('wind').textContent = 'Loading forecast…';
-  fetchWind(lon, lat).then((d) => renderWind($('wind'), d)).catch((err) => { $('wind').textContent = `Forecast failed: ${err.message}`; });
+  fetchWind(lon, lat)
+    .then((d) => { if (turn === clickTurn) renderWind($('wind'), d); })
+    .catch((err) => { if (turn === clickTurn) $('wind').textContent = `Forecast failed: ${err.message}`; });
 
   try {
     const results = await identifyAt(lon, lat);
+    if (turn !== clickTurn) return;
     for (const f of results) {
       const [t, sub, url] = describe(f);
       const d = document.createElement('div');
@@ -650,12 +875,127 @@ clickHandler.setInputAction(async (ev) => {
     }
     if (!results.length) info.append(document.createTextNode('No route, zone or lift right here.'));
   } catch (err) {
-    info.append(document.createTextNode(`Lookup failed: ${err.message}`));
+    if (turn === clickTurn) info.append(document.createTextNode(`Lookup failed: ${err.message}`));
   }
 }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+// ---------- snow view ----------
+// A globe material paints the snow cover on the GPU (see snowlook.js). The snow line comes
+// from an estimate (see snowline.js) until the user moves the slider.
+function applySnow() {
+  if (snow.on && !snow.material) {
+    snow.material = createSnowMaterial(Cesium, ...centre(area), { snowline: Number($('snow-line').value) });
+  }
+  globe.material = snow.on ? snow.material : undefined;
+  if (snow.material) {
+    snow.material.uniforms.selfShade = $('light-toggle').checked ? 0 : 1;
+    snow.material.uniforms.contours = $('snow-contours').checked ? 1 : 0;
+    snow.material.uniforms.strength = Number($('snow-strength').value) / 100;
+  }
+  $('snow-controls').hidden = !snow.on;
+}
+
+function setSnowline(metres, manual, source) {
+  const v = Math.min(3600, Math.max(600, Math.round(metres / 25) * 25));
+  $('snow-line').value = String(v);
+  text($('snow-out'), `${v} m`);
+  if (snow.material) snow.material.uniforms.snowline = v;
+  if (manual) {
+    snow.manual = true;
+    text($('snow-status'), source ? `Set from the ${source}.` : 'Set by hand. “Estimate” goes back to the data.');
+  }
+}
+
+async function estimateSnowline() {
+  const gen = areaGen;
+  text($('snow-status'), 'Estimating the snow line…');
+  try {
+    const model = await fetchModelSnow(area);
+    if (gen !== areaGen) return;
+    const stationPts = stationSamples(state.stations);
+    const fit = fitSnowline([...model, ...stationPts]);
+    snow.fit = fit;
+    if (fit.line === null) { text($('snow-status'), 'No snow data for this area; set the line by hand.'); return; }
+    if (!snow.manual) setSnowline(fit.line, false);
+    const t = model.find((s) => s.time);
+    const when = t ? new Date(t.time).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'time unknown';
+    const src = `${model.length} model points (MeteoSwiss ICON via Open-Meteo)${stationPts.length ? ` and ${stationPts.length} stations` : ''}`;
+    const kept = snow.manual ? ` Your setting of ${$('snow-line').value} m is kept.` : '';
+    text($('snow-status'), `Estimate ${fit.line} m, ${when}. ${describeFit(fit)} Source: ${src}. An estimate, not a measurement.${kept}`);
+  } catch (err) {
+    if (gen === areaGen) text($('snow-status'), `Snow line estimate failed (${err.message}); set it by hand.`);
+  }
+}
+
+$('snow-toggle').checked = snow.on;
+$('snow-toggle').onchange = () => {
+  snow.on = $('snow-toggle').checked;
+  storage.setItem('sbd-snow', snow.on ? '1' : '0');
+  // The snow view is made for the aerial image: rock and forest show through it.
+  if (snow.on && basemapId !== 'image') { snow.previousBasemap = basemapId; setBasemap('image'); }
+  else if (!snow.on && snow.previousBasemap) { setBasemap(snow.previousBasemap); snow.previousBasemap = null; }
+  applySnow();
+};
+$('snow-line').oninput = () => setSnowline(Number($('snow-line').value), true);
+$('snow-auto').onclick = () => { snow.manual = false; estimateSnowline(); };
+$('snow-contours').onchange = applySnow;
+$('snow-strength').oninput = applySnow;
+
+// ---------- areas ----------
+function fillAreaSelect() {
+  const sel = $('area-select');
+  sel.replaceChildren();
+  for (const p of PRESETS) sel.append(new Option(p.name, p.id));
+  if (area.id === 'custom') sel.append(new Option(area.name, 'custom'));
+  sel.value = area.id;
+}
+
+// Loads everything that belongs to an area. The bulletin covers all of Switzerland and is
+// fetched once; only the region shown changes.
+async function loadAreaData() {
+  resetHistory();
+  if (state.bulletin) showBulletinFor(...centre(area));
+  initSentinel();
+  await initStations();
+  await estimateSnowline();
+}
+
+function setArea(next, fly = true) {
+  area = next;
+  areaGen++;
+  saveArea(storage, area);
+  fillAreaSelect();
+  snow.manual = false;
+  if (snow.material) recentreSnowMaterial(Cesium, snow.material, ...centre(area));
+  if (fly) flyHome(1.5);
+  text($('area-status'), '');
+  loadAreaData();
+}
+
+$('area-select').onchange = () => {
+  const p = PRESETS.find((x) => x.id === $('area-select').value);
+  if (p) setArea(p);
+};
+$('area-view').onclick = () => {
+  const c = viewCenter();
+  if (!c || !inSwitzerland(c[0], c[1])) { text($('area-status'), 'Point the view at terrain in Switzerland first.'); return; }
+  setArea(boxAround(c[0], c[1]), false);
+  text($('area-status'), 'Stations, satellite scenes and the snow line now refer to the 19 × 14 km around the view centre.');
+};
+$('area-locate').onclick = () => {
+  if (!navigator.geolocation) { text($('area-status'), 'This browser gives no position.'); return; }
+  text($('area-status'), 'Asking for your position…');
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const { longitude, latitude } = pos.coords;
+    if (!inSwitzerland(longitude, latitude)) { text($('area-status'), 'Your position is outside Switzerland; the map data ends at the border.'); return; }
+    setArea(boxAround(longitude, latitude, 'Around my position'));
+  }, (err) => text($('area-status'), `Position not available: ${err.message}`), { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 });
+};
+
 // ---------- start ----------
+fillAreaSelect();
+if (snow.on) { snow.previousBasemap = 'winter'; setBasemap('image'); }
+applySnow();
 initBulletin();
-initStations();
-initSentinel();
+loadAreaData();
 window.skiApp = { viewer, state }; // for debugging in the console
