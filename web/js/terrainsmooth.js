@@ -6,7 +6,7 @@
 // Method: around every vertex a plane is fitted to the heights nearby, weighted by a
 // Gaussian of the distance (moving least squares, degree 1). The vertex gets the plane's
 // height (moved by 0.3 m at most), and its normal is the plane's normal. A plane fit reproduces any tilted plane
-// exactly, also at a tile's border where data exist on one side only.
+// exactly. At a tile's border the vertices of the neighbouring tiles are part of the fit.
 // (Averaging each vertex with its mesh neighbours was tried first and dropped: on an
 // irregular mesh it bends a steep, perfectly even slope and so adds bumps of its own.)
 //
@@ -130,7 +130,7 @@ export function fitPlanes(x, y, z, width, height, sigma, cell = 0.5) {
 // is smooth as delivered.
 export const SMOOTHING = { 18: { sigma: 1.6, maxShift: 0.3 } };
 
-// ---------- Cesium wiring ----------
+// ---------- worker ----------
 // The fit costs 10 to 25 ms per tile, too much for the frame it would land in. It runs in a
 // worker; the tile is handed to Cesium when the answer is back. Without workers (or if the
 // worker fails to start) the fit runs on the main thread.
@@ -162,6 +162,98 @@ function fitInWorker(xs, ys, hs, widthM, heightM, sigma) {
   });
 }
 
+// ---------- neighbouring tiles ----------
+// A fit that sees one tile only has data on one side at the tile's border, so two tiles
+// would light their shared edge differently and the tile grid would show. Each tile is
+// therefore fitted together with a strip of every neighbour's vertices.
+
+// The vertices within `margin` metres of a tile's border.
+export function edgeBand(xs, ys, hs, widthM, heightM, margin) {
+  const keep = [];
+  for (let i = 0; i < xs.length; i++) {
+    if (xs[i] < margin || xs[i] > widthM - margin || ys[i] < margin || ys[i] > heightM - margin) keep.push(i);
+  }
+  const band = { x: new Float32Array(keep.length), y: new Float32Array(keep.length), h: new Float32Array(keep.length) };
+  keep.forEach((i, k) => { band.x[k] = xs[i]; band.y[k] = ys[i]; band.h[k] = hs[i]; });
+  return band;
+}
+
+// A tile's vertices followed by those neighbour vertices that lie within `margin` outside
+// it. neighbours: [{ band, offX, offY }], the offset of the neighbour's south-west corner
+// from this tile's. The result is shifted by `margin` so that all coordinates are positive;
+// the tile's own vertices come first and keep their order.
+export function withNeighbours(xs, ys, hs, widthM, heightM, margin, neighbours) {
+  const ex = []; const ey = []; const eh = [];
+  const eps = 0.02; // vertices on the shared edge exist in both tiles; take this tile's
+  for (const { band, offX, offY } of neighbours) {
+    for (let i = 0; i < band.x.length; i++) {
+      const px = band.x[i] + offX; const py = band.y[i] + offY;
+      if (px < -margin || px > widthM + margin || py < -margin || py > heightM + margin) continue;
+      if (px >= -eps && px <= widthM + eps && py >= -eps && py <= heightM + eps) continue;
+      ex.push(px); ey.push(py); eh.push(band.h[i]);
+    }
+  }
+  const n = xs.length; const total = n + ex.length;
+  const x = new Float32Array(total); const y = new Float32Array(total); const z = new Float32Array(total);
+  for (let i = 0; i < n; i++) { x[i] = xs[i] + margin; y[i] = ys[i] + margin; z[i] = hs[i]; }
+  for (let i = 0; i < ex.length; i++) { x[n + i] = ex[i] + margin; y[n + i] = ey[i] + margin; z[n + i] = eh[i]; }
+  return { x, y, z, width: widthM + 2 * margin, height: heightM + 2 * margin };
+}
+
+const EARTH = 6378137;
+const BAND_CACHE_MAX = 256;       // about 100 kB each
+const NEIGHBOUR_WAIT_MS = 4000;   // after that the tile is shown without the missing neighbours
+const bands = new Map();          // 'level/x/y' -> Promise of a band, or of null
+
+function tileMetrics(provider, x, y, level) {
+  const rect = provider.tilingScheme.tileXYToRectangle(x, y, level);
+  const lat = (rect.south + rect.north) / 2;
+  return { rect, lat, widthM: (rect.east - rect.west) * EARTH * Math.cos(lat), heightM: (rect.north - rect.south) * EARTH };
+}
+
+// Vertex positions in metres from the tile's south-west corner, heights above the ellipsoid.
+function tileArrays(data, m) {
+  const q = data && data._quantizedVertices;
+  if (!q) return null;
+  const range = data._maximumHeight - data._minimumHeight;
+  if (!(range >= 0)) return null;
+  const n = q.length / 3;
+  const xs = new Float32Array(n); const ys = new Float32Array(n); const hs = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    xs[i] = (q[i] / 32767) * m.widthM;
+    ys[i] = (q[n + i] / 32767) * m.heightM;
+    hs[i] = data._minimumHeight + (q[2 * n + i] / 32767) * range;
+  }
+  return { xs, ys, hs, n, range };
+}
+
+function remember(key, promise) {
+  bands.set(key, promise);
+  if (bands.size > BAND_CACHE_MAX) bands.delete(bands.keys().next().value);
+}
+
+// The border strip of tile x/y as delivered, fetched if it is not known yet.
+function neighbourBand(provider, original, x, y, level, margin) {
+  const key = `${level}/${x}/${y}`;
+  let pending = bands.get(key);
+  if (!pending) {
+    const scheme = provider.tilingScheme;
+    if (x < 0 || y < 0 || x >= scheme.getNumberOfXTilesAtLevel(level) || y >= scheme.getNumberOfYTilesAtLevel(level)) return Promise.resolve(null);
+    if (typeof provider.getTileDataAvailable === 'function' && provider.getTileDataAvailable(x, y, level) === false) return Promise.resolve(null);
+    pending = Promise.resolve()
+      .then(() => original(x, y, level)) // no Request object: not throttled, not cancelled
+      .then((data) => {
+        const m = tileMetrics(provider, x, y, level);
+        const a = tileArrays(data, m);
+        return a ? edgeBand(a.xs, a.ys, a.hs, m.widthM, m.heightM, margin) : null;
+      })
+      .catch(() => { bands.delete(key); return null; }); // may work next time
+    remember(key, pending);
+  }
+  return Promise.race([pending, new Promise((resolve) => setTimeout(() => resolve(null), NEIGHBOUR_WAIT_MS))]);
+}
+
+// ---------- Cesium wiring ----------
 // Wraps the provider's requestTileGeometry. It relies on the private fields of
 // QuantizedMeshTerrainData as they are in CesiumJS 1.121 (the version index.html pins);
 // if a field is missing the tile is passed through untouched.
@@ -172,37 +264,41 @@ export function smoothTerrain(Cesium, provider, settings = SMOOTHING) {
     // Only the globe passes a Request object. Cesium's sampleTerrain calls with three
     // arguments; route analysis and click elevations keep the heights as delivered.
     if (!pending || !settings[level] || !request) return pending;
-    return pending.then((data) => smoothTile(Cesium, provider, data, x, y, level, settings[level]).catch(() => {}).then(() => data));
+    return pending.then((data) => smoothTile(Cesium, provider, original, data, x, y, level, settings[level]).catch(() => {}).then(() => data));
   };
 }
 
-async function smoothTile(Cesium, provider, data, tx, ty, level, { sigma, maxShift }) {
+const AROUND = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
+
+async function smoothTile(Cesium, provider, original, data, tx, ty, level, { sigma, maxShift }) {
   const q = data._quantizedVertices;
   const enc = data._encodedNormals;
   if (!q || !enc || data._sbdSmoothed) return;
-  const n = q.length / 3;
+  const m = tileMetrics(provider, tx, ty, level);
+  const { rect, lat, widthM, heightM } = m;
+  const own = tileArrays(data, m);
+  if (!own || !(own.range > 0)) return;
+  const { xs, ys, hs, n, range } = own;
   if (enc.length !== n * 2) return;
-  const rect = provider.tilingScheme.tileXYToRectangle(tx, ty, level);
-  const lat = (rect.south + rect.north) / 2;
-  const widthM = (rect.east - rect.west) * 6378137 * Math.cos(lat);
-  const heightM = (rect.north - rect.south) * 6378137;
-  const range = data._maximumHeight - data._minimumHeight;
-  if (!(range > 0)) return;
+  const margin = 3 * sigma;
+  const key = `${level}/${tx}/${ty}`;
+  if (!bands.has(key)) remember(key, Promise.resolve(edgeBand(xs, ys, hs, widthM, heightM, margin))); // before the heights are changed
 
-  const xs = new Float32Array(n);
-  const ys = new Float32Array(n);
-  const hs = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    xs[i] = (q[i] / 32767) * widthM;
-    ys[i] = (q[n + i] / 32767) * heightM;
-    hs[i] = (q[2 * n + i] / 32767) * range;
-  }
-  const fit = await fitInWorker(xs, ys, hs, widthM, heightM, sigma);
+  // Tile y counts from north to south in Cesium's tiling schemes.
+  const around = await Promise.all(AROUND.map(async ([ox, oy]) => {
+    const band = await neighbourBand(provider, original, tx + ox, ty + oy, level, margin);
+    if (!band) return { sx: ox, sy: -oy, band: null };
+    const r = provider.tilingScheme.tileXYToRectangle(tx + ox, ty + oy, level);
+    return { sx: ox, sy: -oy, band, offX: (r.west - rect.west) * EARTH * Math.cos(lat), offY: (r.south - rect.south) * EARTH };
+  }));
+  const all = withNeighbours(xs, ys, hs, widthM, heightM, margin, around.filter((a) => a.band));
+  const missing = around.filter((a) => !a.band);
+  const fit = await fitInWorker(all.x, all.y, all.z, all.width, all.height, sigma);
   if (data._quantizedVertices !== q || data._sbdSmoothed) return; // Cesium has moved on with this tile
 
-  // Normals: the fitted plane's, blended towards the delivered normal near the tile border.
-  // The neighbouring tile fits from its own vertices only and would light the shared edge
-  // differently; the delivered normals agree across it.
+  // Normals: the fitted plane's. Where a neighbour is missing the fit is one-sided there,
+  // so towards that border the normal blends into the delivered one, which agrees with
+  // whatever is drawn on the other side.
   const frame = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromRadians((rect.west + rect.east) / 2, lat, 0));
   const E = Cesium.Matrix4.getColumn(frame, 0, new Cesium.Cartesian4());
   const N = Cesium.Matrix4.getColumn(frame, 1, new Cesium.Cartesian4());
@@ -217,7 +313,13 @@ async function smoothTile(Cesium, provider, data, tx, ty, level, { sigma, maxShi
     world.x = (E.x * e + N.x * nn + U.x) / l;
     world.y = (E.y * e + N.y * nn + U.y) / l;
     world.z = (E.z * e + N.z * nn + U.z) / l;
-    const d = Math.min(xs[i], widthM - xs[i], ys[i], heightM - ys[i]) / (2 * sigma); // 0 on the border, 1 from 2 sigma inward
+    let d = 1; // 0 on a border without neighbour, 1 from 2 sigma inward
+    for (const { sx, sy } of missing) {
+      const dx = sx < 0 ? xs[i] : widthM - xs[i];
+      const dy = sy < 0 ? ys[i] : heightM - ys[i];
+      const dist = sx && sy ? Math.max(dx, dy) : (sx ? dx : dy);
+      d = Math.min(d, dist / (2 * sigma));
+    }
     if (d < 1) {
       const k = d <= 0 ? 0 : d * d * (3 - 2 * d);
       Cesium.AttributeCompression.octDecode(enc[i * 2], enc[i * 2 + 1], delivered);
@@ -240,7 +342,7 @@ async function smoothTile(Cesium, provider, data, tx, ty, level, { sigma, maxShi
   for (let i = 0; i < n; i++) {
     if (border[i] || !fit.ok[i]) continue;
     const shift = Math.max(-maxShift, Math.min(maxShift, fit.z[i] - hs[i]));
-    q[2 * n + i] = Math.max(0, Math.min(32767, Math.round(((hs[i] + shift) / range) * 32767)));
+    q[2 * n + i] = Math.max(0, Math.min(32767, Math.round(((hs[i] + shift - data._minimumHeight) / range) * 32767)));
   }
   data._sbdSmoothed = true;
 }

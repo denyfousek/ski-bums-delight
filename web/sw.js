@@ -5,7 +5,7 @@
 //   cache as fallback, so the shell opens offline.
 // Map tiles, the bulletin, stations and forecasts are other origins and are never touched;
 // the local proxy (/proxy/) is left alone as well.
-const CACHE = 'sbd-shell-v4';
+const CACHE = 'sbd-shell-v5';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon-192.png',
   'js/main.js', 'js/ui.js', 'js/config.js', 'js/areas.js', 'js/bulletin.js', 'js/forest.js',

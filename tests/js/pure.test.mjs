@@ -480,7 +480,7 @@ test('stations: compass and label repair', () => {
 });
 
 // ---------- terrain smoothing ----------
-import { fitPlanes } from '../../web/js/terrainsmooth.js';
+import { fitPlanes, edgeBand, withNeighbours } from '../../web/js/terrainsmooth.js';
 
 // Irregular points over a 52 x 76 m tile (the size of a level-18 tile), about 0.6 m apart,
 // placed by a fixed pseudo-random sequence so the test is repeatable.
@@ -617,4 +617,37 @@ test('shadow pass patch: the terminator switch becomes part of the shader cache 
   assert.equal(key(true), 'receiveShadow terrain');
   assert.notEqual(key(false), key(true));
   assert.equal(C.ShadowMapShader.getShadowReceiveShaderKeyword({}, true, false, false), 'receiveShadow terrain');
+});
+
+test('terrain smoothing: two tiles agree on their shared edge when each sees the other', () => {
+  // One rough slope, cut into a west and an east tile of 40 x 40 m.
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const height = (x, y) => 0.8 * x + 0.3 * y + 0.25 * Math.sin(x * 1.3) * Math.cos(y * 1.7);
+  const W = 40; const H = 40; const sigma = 1.6; const margin = 3 * sigma;
+  const tile = (x0) => {
+    const x = []; const y = []; const z = [];
+    for (let j = 0; j <= 60; j++) { // vertices on the shared edge, the same in both tiles
+      x.push(x0 === 0 ? W : 0); y.push((j / 60) * H); z.push(height(W, (j / 60) * H));
+    }
+    for (let i = 0; i < 4000; i++) {
+      const px = rnd() * W; const py = rnd() * H;
+      x.push(px); y.push(py); z.push(height(x0 + px, py) + (rnd() - 0.5) * 0.3);
+    }
+    return { x: Float32Array.from(x), y: Float32Array.from(y), z: Float32Array.from(z) };
+  };
+  const a = tile(0); const b = tile(W);
+  const bandA = edgeBand(a.x, a.y, a.z, W, H, margin);
+  const bandB = edgeBand(b.x, b.y, b.z, W, H, margin);
+  assert.ok(bandA.x.length < a.x.length / 2 && bandA.x.length > 100);
+  const fitWith = (t, neighbours) => {
+    const all = withNeighbours(t.x, t.y, t.z, W, H, margin, neighbours);
+    assert.ok(Math.abs(all.x[0] - (t.x[0] + margin)) < 1e-4); // own vertices first, shifted
+    return fitPlanes(all.x, all.y, all.z, all.width, all.height, sigma);
+  };
+  const gap = (fa, fb) => { let g = 0; for (let j = 0; j <= 60; j++) g = Math.max(g, Math.abs(fa.gx[j] - fb.gx[j]), Math.abs(fa.gy[j] - fb.gy[j])); return g; };
+  const alone = gap(fitWith(a, []), fitWith(b, []));
+  const together = gap(fitWith(a, [{ band: bandB, offX: W, offY: 0 }]), fitWith(b, [{ band: bandA, offX: -W, offY: 0 }]));
+  assert.ok(together < 0.01, `slopes differ by ${together}`);
+  assert.ok(alone > 5 * together, `alone ${alone}, together ${together}`);
 });
