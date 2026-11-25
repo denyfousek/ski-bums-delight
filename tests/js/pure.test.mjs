@@ -555,3 +555,56 @@ test('terrain smoothing: too few points give no fit and keep their height', () =
   const lx = new Float32Array(n).fill(10); const ly = Float32Array.from({ length: n }, (_, k) => k * 0.3); const lz = new Float32Array(n).fill(5);
   assert.ok(fitPlanes(lx, ly, lz, 52, 76, 1.6).ok.every((v) => v === 0));
 });
+
+// ---------- rendering quality ----------
+import { patchShadowPass, setShadowTerminator, QUALITY } from '../../web/js/quality.js';
+
+// Stand-in for Cesium.ShadowMapShader: returns a shader source whose last part ends the
+// way CesiumJS 1.121 ends its shadow pass.
+function fakeCesium(lastLine = 'out_FragColor.rgb *= visibility;') {
+  return {
+    ShadowMapShader: {
+      createShadowReceiveFragmentShader: function original() {
+        // out_FragColor.rgb *= visibility;   (the patch looks for this text in the function)
+        return { sources: ['void czm_shadow_receive_main() {}', `void main() {\n  shadowParameters.darkness = d;\n  float visibility = 1.0;\n  ${lastLine}\n}`] };
+      },
+    },
+  };
+}
+
+test('shadow pass patch: swaps the grey multiply for the per-fragment ratio, once', () => {
+  const C = fakeCesium();
+  assert.equal(patchShadowPass(C), true);
+  const out = C.ShadowMapShader.createShadowReceiveFragmentShader();
+  const text = out.sources[1];
+  assert.ok(text.includes('#ifdef SBD_SNOW'));
+  assert.ok(text.includes('sbd_shadowRatio'));
+  // The original line survives in the #else branch, for shaders without the snow material.
+  assert.equal(text.split('out_FragColor.rgb *= visibility;').length - 1, 1);
+  assert.ok(text.indexOf('#else') < text.indexOf('out_FragColor.rgb *= visibility;'));
+  // Patching twice does not wrap twice.
+  const fn = C.ShadowMapShader.createShadowReceiveFragmentShader;
+  assert.equal(patchShadowPass(C), true);
+  assert.equal(C.ShadowMapShader.createShadowReceiveFragmentShader, fn);
+});
+
+test('shadow pass patch: leaves an unknown Cesium alone', () => {
+  assert.equal(patchShadowPass({}), false);
+  const C = { ShadowMapShader: { createShadowReceiveFragmentShader: () => ({ sources: ['void main() { colour *= v; }'] }) } };
+  const fn = C.ShadowMapShader.createShadowReceiveFragmentShader;
+  assert.equal(patchShadowPass(C), false);
+  assert.equal(C.ShadowMapShader.createShadowReceiveFragmentShader, fn);
+});
+
+test('shadow terminator switch marks the shadow map dirty only on a change', () => {
+  const viewer = { shadowMap: { _terrainBias: { normalShading: true }, dirty: false } };
+  setShadowTerminator(viewer, true);
+  assert.equal(viewer.shadowMap._terrainBias.normalShading, false);
+  assert.equal(viewer.shadowMap.dirty, true);
+  viewer.shadowMap.dirty = false;
+  setShadowTerminator(viewer, true);
+  assert.equal(viewer.shadowMap.dirty, false);
+  setShadowTerminator(viewer, false);
+  assert.equal(viewer.shadowMap._terrainBias.normalShading, true);
+  assert.ok(QUALITY.high.shadowSize > QUALITY.standard.shadowSize);
+});

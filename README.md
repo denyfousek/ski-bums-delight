@@ -29,6 +29,7 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 |---|---|---|
 | Snow view | GPU shader on the globe: snow above the snow line (lower on north faces, higher on south faces), steep faces stay rock with the aerial image showing through, warm sunlight, bluish shade, contour lines every 100 m (every 20 m close up). Drawn from terrain alone: it shows shape, not measured snow cover | swisstopo terrain |
 | Snow line | estimated per area from snow depth against elevation: 25 model points (MeteoSwiss ICON) plus the stations, which count four times; shown with its date and method; slider to override. A loaded Sentinel-2 scene gives a second, observed value (share of snow per 100 m band from the scene classification) | Open-Meteo, SLF, MeteoSwiss, Copernicus |
+| High quality | switch in the Day tab, on by default except on phones. Snow gets its own lighting: warm sun that turns golden when low, blue sky light in the shade, a soft roll-off to white, light bounced between slopes, hollows slightly darker than ridges, wind ripples and drift waves close up, a sheen towards the sun and single crystals that flash. Terrain shadows are cast at 4096 px and take away only the sunlight (Cesium's shadow pass is patched for that, see `quality.js`); rock above the snow line gets a cold grey veil and snow on its ledges. Measured on an RTX 3090 at 1800 × 1600: 4 to 13 ms per frame, standard 1.5 ms | — |
 | Close-up terrain | the finest terrain tiles (level 18, a vertex every 0.4 to 0.9 m) carry height jitter that shows as terraces under low sun; at load a plane is fitted around every vertex (Gaussian weight, 1.6 m for the normals, 0.6 m for the heights), which removes the jitter and keeps slopes exact. `?terrain=raw` shows the tiles as delivered | swisstopo terrain |
 | Areas | presets, "View" (19 × 14 km around the view centre) or your position; stations, satellite scenes and snow line reload; remembered in the browser | — |
 | 3D view | swisstopo terrain, winter/summer national map or SWISSIMAGE | geo.admin.ch |
@@ -48,6 +49,11 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 A sample route is in `web/samples/`.
 
 ## Known limits
+
+- High quality patches the text of CesiumJS's shadow shader and reads private fields of its shadow map
+  and terrain tiles. That is tied to version 1.121, which `index.html` pins. On another version the
+  patch finds nothing to replace and the view falls back to grey shadows.
+- Wind ripples, drift waves and sparkle are invented detail (a west wind is assumed), not data.
 
 - The snow view is a drawing from terrain, snow line and sun. It does not know wind-blown ridges,
   avalanche debris or bare south faces above the line.
@@ -96,6 +102,7 @@ web/js/areas.js     area presets, boxes, storage
 web/js/snowline.js  snow line estimate
 web/js/snowlook.js  snow view shader (Cesium globe material)
 web/js/terrainsmooth.js  smoothing of the finest terrain tiles
+web/js/quality.js   rendering quality: shadows, haze, patch of Cesium's shadow pass
 web/js/ui.js        tabs, theme, bottom sheet, service worker registration
 web/sw.js           service worker (app shell only)
 web/manifest.webmanifest, web/icons/   installable app
