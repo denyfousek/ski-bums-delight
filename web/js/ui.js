@@ -42,3 +42,52 @@ function setTheme(theme) {
 }
 themeButtons.forEach((b) => b.addEventListener('click', () => setTheme(b.dataset.theme)));
 setTheme(document.documentElement.dataset.theme || 'auto');
+
+// Bottom sheet on phones: tap the handle to step through peek / half / full, or drag it.
+const SHEETS = ['peek', 'half', 'full'];
+const handle = document.getElementById('sheet-handle');
+const panel = document.getElementById('panel');
+function setSheet(name) {
+  document.documentElement.dataset.sheet = SHEETS.includes(name) ? name : 'half';
+  panel.style.height = '';
+}
+setSheet('half');
+if (handle) {
+  let drag = null;
+  handle.addEventListener('pointerdown', (e) => {
+    drag = { y: e.clientY, h: panel.getBoundingClientRect().height, moved: false };
+    handle.setPointerCapture(e.pointerId);
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dy = drag.y - e.clientY;
+    if (Math.abs(dy) > 6) drag.moved = true;
+    if (!drag.moved) return;
+    panel.classList.add('dragging');
+    panel.style.height = `${Math.max(110, Math.min(window.innerHeight * 0.92, drag.h + dy))}px`;
+  });
+  const end = () => {
+    if (!drag) return;
+    panel.classList.remove('dragging');
+    const current = document.documentElement.dataset.sheet;
+    if (drag.moved) {
+      const share = panel.getBoundingClientRect().height / window.innerHeight;
+      setSheet(share < 0.32 ? 'peek' : share < 0.72 ? 'half' : 'full');
+    } else {
+      setSheet(SHEETS[(SHEETS.indexOf(current) + 1) % SHEETS.length]);
+    }
+    drag = null;
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
+}
+// Choosing a tab while the sheet only peeks opens it.
+tabs.forEach((t) => t.addEventListener('click', () => {
+  if (document.documentElement.dataset.sheet === 'peek') setSheet('half');
+}));
+
+// Installable app: the service worker keeps the app shell for offline starts.
+// Map tiles and live data always come from the network.
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname))) {
+  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => { /* app works without it */ }); });
+}

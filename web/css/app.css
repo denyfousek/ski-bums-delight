@@ -37,6 +37,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* the attribute must win over .row { display: flex } */
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
 #globe { position: fixed; inset: 0 0 0 380px; }
 #panel {
@@ -118,9 +119,56 @@ td.warn { color: var(--warn); font-weight: 700; }
 .warn-box { border-left: 3px solid var(--warn); padding: 6px 8px; background: rgba(200,16,46,.07); color: var(--ink); }
 footer a { color: var(--accent); }
 .cesium-viewer-bottom { left: 8px; }
+/* Area picker, history, route check */
+.row.area { margin: 8px 0 2px; }
+.row.area select { flex: 1; }
+.note { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; color: var(--ink); }
+.note button { font-size: 12px; padding: 2px 8px; margin-top: 4px; }
+.history { margin-top: 10px; }
+.days { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; }
+.days .day { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 7px; }
+.days .day i { width: 10px; height: 10px; border-radius: 2px; border: 1px solid rgba(0,0,0,.3); display: inline-block; }
+.days .day.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.days .day:disabled { cursor: default; }
+.lights { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0 6px; color: var(--ink); }
+.lights span, .section { display: flex; align-items: center; gap: 6px; }
+.lights i, .section i { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; }
+.section { padding: 3px 0; border-bottom: 1px dotted var(--line); color: var(--ink); }
+#sheet-handle { display: none; }
+
+/* Phones: the map fills the screen, the panel is a sheet that slides up from the bottom.
+   Three heights: peek (title and tabs), half, full. ui.js sets data-sheet on <html>. */
 @media (max-width: 760px) {
-  #globe { inset: 0 0 45vh 0; }
-  #panel { top: 55vh; width: 100%; border-right: 0; border-top: 1px solid var(--line); padding: 0 16px 30px; }
+  /* The map ends just under the sheet's top edge, so the view centre (routes flown to,
+     the area's home view) stays visible. With the sheet fully open the map keeps its
+     half-state size, so the view does not jump behind it. */
+  #globe { inset: 0 0 calc(52dvh - 14px) 0; }
+  :root[data-sheet="peek"] #globe { inset: 0 0 158px 0; }
+  #area-status:empty { display: none; }
+  :root[data-sheet="peek"] #area-status { display: none; } /* a status line must not push the tabs out of the peek */
+  #panel {
+    top: auto; left: 0; right: 0; bottom: 0; width: 100%; height: 52dvh; max-height: 92dvh;
+    border-right: 0; border-top: 1px solid var(--line); border-radius: 14px 14px 0 0;
+    padding: 0 14px calc(24px + env(safe-area-inset-bottom)); box-shadow: 0 -6px 24px rgba(0,0,0,.22);
+    transition: height .22s ease; overscroll-behavior: contain;
+  }
+  :root[data-sheet="peek"] #panel { height: 172px; overflow: hidden; }
+  :root[data-sheet="full"] #panel { height: 92dvh; }
+  #panel.dragging { transition: none; }
+  #sheet-handle {
+    display: block; position: sticky; top: 0; z-index: 3; width: 100%; height: 22px; margin: 0; padding: 0;
+    border: 0; border-radius: 0; background: var(--panel); cursor: grab; touch-action: none;
+  }
+  #sheet-handle span { display: block; width: 44px; height: 5px; border-radius: 3px; margin: 8px auto 0; background: var(--line); }
+  #panel > header { top: 22px; padding-top: 0; }
+  .eyebrow { display: none; }
+  header h1 { font-size: 19px; margin: 0; }
+  #panel > header > .row.between { position: absolute; right: 0; top: 0; }
+  button, select, input[type=date] { font-size: 15px; padding: 8px 12px; }
+  .seg.mini button { font-size: 11px; padding: 4px 7px; }
+  .tabs button { padding: 10px 4px; font-size: 14px; }
+  input[type=range] { height: 28px; }
+  .cesium-viewer-bottom { bottom: auto; top: 4px; left: 4px; }
 }
 
 /* ---------- Street theme: neon graffiti on a white brick wall ---------- */
@@ -204,3 +252,10 @@ footer a { color: var(--accent); }
 [data-theme="street"] .warn-box { border: 2.5px solid var(--ink); border-left: 8px solid var(--accent); border-radius: 8px; background: #fff; }
 [data-theme="street"] footer a { color: var(--violet); font-weight: 700; }
 [data-theme="street"] .drop { border-color: var(--violet); }
+
+/* Street theme on phones: smaller title so the sheet's peek height still fits. */
+@media (max-width: 760px) {
+  [data-theme="street"] header h1 { font-size: 27px; margin: 2px 0; }
+  [data-theme="street"] #panel > header::after { display: none; }
+  [data-theme="street"] #sheet-handle { background: transparent; }
+}

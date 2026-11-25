@@ -1,12 +1,4 @@
-// Central configuration: area, data endpoints, layer IDs.
-
-export const AREA = {
-  name: 'Andermatt – Realp',
-  west: 8.45, south: 46.55, east: 8.70, north: 46.68,
-};
-
-// Camera south of the Urseren valley, looking north.
-export const HOME_VIEW = { lon: 8.575, lat: 46.515, height: 6800, heading: 0, pitch: -32 };
+// Central configuration: data endpoints and layer IDs. Areas live in areas.js.
 
 export const TERRAIN_URL = 'https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/';
 

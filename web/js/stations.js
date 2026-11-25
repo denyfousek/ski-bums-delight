@@ -19,6 +19,29 @@ function inBox(lon, lat, box, margin) {
   return lon >= box.west - margin && lon <= box.east + margin && lat >= box.south - margin && lat <= box.north + margin;
 }
 
+// Newest values of an IMIS series (30-min records, any order). Each variable is taken from
+// the newest record that has it: a record with wind but no snow depth must not hide the
+// last measured depth. Missing keys and null both count as "no value".
+export function latestValues(series) {
+  const rows = [...series].sort((a, b) => String(a.measure_date).localeCompare(String(b.measure_date)));
+  const newest = (key) => { for (let i = rows.length - 1; i >= 0; i--) if (rows[i][key] != null) return rows[i]; return null; };
+  const oldest = (key) => rows.find((m) => m[key] != null) || null;
+  const snow = newest('HS');
+  const snowFirst = oldest('HS');
+  const wind = newest('VW_30MIN_MEAN');
+  const air = newest('TA_30MIN_MEAN');
+  const any = rows.length ? rows[rows.length - 1] : null;
+  return {
+    time: (snow || wind || any || {}).measure_date || null,
+    snowCm: snow ? snow.HS : null,
+    snowChange24h: snow && snowFirst && snow !== snowFirst ? snow.HS - snowFirst.HS : null,
+    windKmh: wind ? wind.VW_30MIN_MEAN * 3.6 : null,
+    gustKmh: wind && wind.VW_30MIN_MAX != null ? wind.VW_30MIN_MAX * 3.6 : null,
+    windDir: wind && wind.DW_30MIN_MEAN != null ? wind.DW_30MIN_MEAN : null,
+    airC: air ? air.TA_30MIN_MEAN : null,
+  };
+}
+
 export async function fetchImis(box) {
   const res = await fetch(`${IMIS_PROXY}stations`);
   if (!res.ok) throw new Error(`IMIS stations HTTP ${res.status} (is serve.py running?)`);
@@ -29,24 +52,7 @@ export async function fetchImis(box) {
       const r = await fetch(`${IMIS_PROXY}station/${encodeURIComponent(s.code)}/measurements`);
       if (!r.ok) return;
       const series = await r.json();
-      const last = [...series].reverse().find((m) => m.HS !== null || m.VW_30MIN_MEAN !== null) || null;
-      const first = series.find((m) => m.HS !== null) || null;
-      out.push({
-        source: 'SLF IMIS',
-        code: s.code,
-        name: fixMojibake(s.label),
-        lon: s.lon,
-        lat: s.lat,
-        elevation: s.elevation,
-        type: s.type,
-        time: last && last.measure_date,
-        snowCm: last && last.HS != null ? last.HS : null,
-        snowChange24h: last && first && last.HS != null && first.HS != null ? last.HS - first.HS : null,
-        windKmh: last && last.VW_30MIN_MEAN != null ? last.VW_30MIN_MEAN * 3.6 : null,
-        gustKmh: last && last.VW_30MIN_MAX != null ? last.VW_30MIN_MAX * 3.6 : null,
-        windDir: last && last.DW_30MIN_MEAN != null ? last.DW_30MIN_MEAN : null,
-        airC: last && last.TA_30MIN_MEAN != null ? last.TA_30MIN_MEAN : null,
-      });
+      out.push({ source: 'SLF IMIS', code: s.code, name: fixMojibake(s.label), lon: s.lon, lat: s.lat, elevation: s.elevation, type: s.type, ...latestValues(series) });
     } catch { /* one failing station must not break the rest */ }
   }));
   return out;

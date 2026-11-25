@@ -18,6 +18,9 @@ export async function fetchWind(lon, lat) {
   return res.json();
 }
 
+// Missing model values are shown as a dash, never as 0.
+const num = (v) => (v === null || v === undefined || Number.isNaN(v) ? '–' : `${Math.round(v)}`);
+
 // Draws a compact hourly table (every 3 h) into el.
 export function renderWind(el, data) {
   el.replaceChildren();
@@ -44,9 +47,9 @@ export function renderWind(el, data) {
     const row = table.insertRow();
     const cells = [
       t.toLocaleString('en-GB', { weekday: 'short', hour: '2-digit' }),
-      `${Math.round(h.wind_speed_10m[i])}`,
-      `${Math.round(h.wind_gusts_10m[i])}`,
-      compass(h.wind_direction_10m[i]),
+      num(h.wind_speed_10m[i]),
+      num(h.wind_gusts_10m[i]),
+      compass(h.wind_direction_10m[i]) || '–',
       h.temperature_2m[i] != null ? h.temperature_2m[i].toFixed(0) : '',
       h.freezing_level_height[i] != null ? `${Math.round(h.freezing_level_height[i] / 50) * 50}` : '',
       h.snowfall[i] ? `${h.snowfall[i].toFixed(1)}` : '',
