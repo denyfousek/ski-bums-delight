@@ -1,4 +1,8 @@
 # Publishes web/ to GitHub Pages on every push to main.
+# Upload and deploy run as two jobs with a pause in between: since late November 2026
+# deploy-pages often fails to find an artifact uploaded a moment earlier in the same job
+# ("No artifacts named github-pages", actions/deploy-pages#451). Re-running only the
+# deploy job then works, because the artifact is not uploaded a second time.
 name: Pages
 on:
   push:
@@ -10,18 +14,24 @@ permissions:
   id-token: write
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Wait until the artifact is listed
+        run: sleep 15
       - id: deployment
         uses: actions/deploy-pages@v4
