@@ -20,8 +20,11 @@ Then open <http://127.0.0.1:8765>. Python 3.9+ standard library only; the page l
 CesiumJS and geotiff.js from jsDelivr. The server binds to `127.0.0.1` only.
 
 `serve.py` exists for two reasons: Cesium needs to be served over HTTP, and the SLF IMIS
-station API sends no CORS header. The proxy forwards exactly two read-only paths
-(`stations`, `station/<CODE>/measurements`) and caches answers for 10 minutes.
+station API sends no CORS header. The browser therefore reads one condensed file,
+`data/imis.json`. Locally `serve.py` builds it on request (three SLF requests, kept for
+10 minutes); on GitHub Pages the workflow builds it every hour with the same code
+(`scripts/fetch_imis.py`) and publishes it with the page. The app shows the age of the
+snapshot from the time stamp inside the file and warns from 3 hours on.
 
 ## Features
 
@@ -39,7 +42,8 @@ station API sends no CORS header. The proxy forwards exactly two read-only paths
 | Sun & shade map | exact terrain shadows on swissALTI3D (8 m), 8 × 8 km plus 4 km margin, follows the time slider | swisstopo |
 | Avalanche bulletin | danger level, problems, aspects and elevations for the area or any clicked point; optional danger map; the last 7 days on request (the SLF API takes `?activeAt=`) | SLF (CC BY 4.0) |
 | Critical slopes | slope + aspect from swissALTI3D (4 m) for an 8 × 8 km square; marks ≥ 30° slopes whose aspect and elevation the bulletin names | swisstopo, SLF |
-| Stations | snow depth (and 24 h change), wind, gusts, temperature | SLF IMIS (CC BY 4.0), MeteoSwiss |
+| New snow | one row per day, 7 days back, today, 4 days ahead, for the clicked point or the area centre: model precipitation × 0.7 = new snow where it is cold enough; below it the daily 0° line (max/min) and the strongest 10 m gust of the model cell; sums of the last and next 3 days. A missing day is a dash, never 0 | Open-Meteo, model MeteoSwiss ICON (non-commercial use only) |
+| Stations | snow depth (and 24 h change), wind, gusts, temperature; SLF values from the hourly snapshot, marked as raw and unchecked | SLF IMIS (CC BY 4.0), MeteoSwiss |
 | Wind forecast | hourly wind, gusts, 0° line, snowfall for a clicked point, 2 days | Open-Meteo, model MeteoSwiss ICON (non-commercial use only) |
 | Sentinel-2 | true colour 10 m, last 3 weeks, cloud cover per scene | Copernicus via Earth Search (keyless) |
 | GPX | distance, ascent (changes under 5 m ignored, so GPS noise does not add up), profile, wildlife zones crossed; traffic light per section against today's bulletin: green below 30°, yellow from 30°, red from 30° in an aspect and elevation the bulletin names; line and profile are coloured | swisstopo terrain, SLF, BAFU |
@@ -70,8 +74,10 @@ A sample route is in `web/samples/`.
 - Open-Meteo gives 10 m wind at model-grid elevation, not ridge wind. Its free tier forbids commercial use.
 - Sentinel-2 cloud cover is per 100 km tile, not for the area; clouds and snow look alike in true colour.
 - The SLF asks that its interfaces are used for data retrieval rather than serving information systems
-  directly. Fine for private use; before sharing the tool more widely, cache through the server or ask
-  data@slf.ch.
+  directly. The app therefore never asks the SLF from the browser: one hourly snapshot serves every
+  visitor. Scheduled GitHub runs may start late or be skipped; the age warning shows it.
+- New snow is one number per model cell (1–2 km). The model gives one precipitation amount per point;
+  elevation only decides whether it falls as rain or snow. Not snow depth, not avalanche information.
 
 ## Tests
 
@@ -81,9 +87,11 @@ node --test tests/js/*.test.mjs
 python scripts/check_sources.py
 ```
 
-- Python: proxy whitelist, cache, malformed requests, a local smoke test.
+- Python: the station snapshot (condensing, missing values, same bytes for the same answers),
+  serve.py (snapshot route equals the script output, cache, SLF failure, malformed requests, smoke test).
 - Node (22+, no packages): the modules that need no browser — projections, sun, shade sweep,
-  slope and aspect, bulletin rules, GPX analysis and route check, snow line, areas, stations.
+  slope and aspect, bulletin rules, GPX analysis and route check, snow line, areas, stations,
+  new-snow table (against a saved Open-Meteo answer).
 - `check_sources.py` asks every external data source once and checks the shape of the answer.
 
 GitHub Actions run the first two on every push and pull request (`ci.yml`) and the third every
@@ -93,7 +101,7 @@ browser, at desktop and phone width.
 ## Layout
 
 ```
-serve.py            local server + IMIS proxy
+serve.py            local server, builds data/imis.json
 web/index.html      page
 web/css/app.css
 web/js/main.js      viewer and panel wiring
@@ -107,10 +115,12 @@ web/js/ui.js        tabs, theme, bottom sheet, service worker registration
 web/sw.js           service worker (app shell only)
 web/manifest.webmanifest, web/icons/   installable app
 scripts/check_sources.py   data source check
+scripts/fetch_imis.py      SLF station snapshot (Pages workflow, serve.py)
 tests/              Python and Node tests
 web/js/bulletin.js  SLF bulletin
 web/js/slope.js     swissALTI3D slope/aspect analysis
-web/js/stations.js  IMIS + MeteoSwiss stations
+web/js/newsnow.js   Open-Meteo new snow per day
+web/js/stations.js  IMIS snapshot + MeteoSwiss stations
 web/js/weather.js   Open-Meteo wind forecast
 web/js/sentinel.js  Sentinel-2 search and reprojection
 web/js/gpx.js       GPX import and analysis

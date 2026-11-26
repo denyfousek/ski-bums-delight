@@ -1,5 +1,6 @@
-"""Tests for serve.py: proxy whitelist, cache, and a local smoke test (no network)."""
+"""Tests for serve.py: cache, the station snapshot route and a local smoke test (no network)."""
 import http.client
+import json
 import os
 import sys
 import threading
@@ -8,33 +9,14 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import serve  # noqa: E402
+import fetch_imis  # noqa: E402  (serve.py puts scripts/ on the path)
+
+FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "imis-raw.json")
 
 
-class UpstreamUrlTest(unittest.TestCase):
-    def test_station_list_is_allowed(self):
-        self.assertEqual(
-            serve.upstream_url("/proxy/imis/stations"),
-            "https://measurement-api.slf.ch/public/api/imis/stations",
-        )
-
-    def test_station_measurements_are_allowed(self):
-        self.assertEqual(
-            serve.upstream_url("/proxy/imis/station/URS2/measurements"),
-            "https://measurement-api.slf.ch/public/api/imis/station/URS2/measurements",
-        )
-
-    def test_unknown_paths_are_rejected(self):
-        for path in [
-            "/proxy/imis/",
-            "/proxy/imis/../secret",
-            "/proxy/imis/station/URS2/../../x",
-            "/proxy/imis/station/urs2;rm/measurements",
-            "/proxy/imis/stations?x=1",
-            "/proxy/other/stations",
-            "/proxy/imis/station/TOOLONGCODE/measurements",
-        ]:
-            with self.subTest(path=path):
-                self.assertIsNone(serve.upstream_url(path))
+def load_raw():
+    with open(FIXTURE, encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 class CacheTest(unittest.TestCase):
@@ -73,9 +55,47 @@ class SmokeTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"Ski Bum", body)
 
-    def test_rejected_proxy_path_returns_404(self):
-        status, _ = self.request("/proxy/imis/../serve.py")
+    def test_old_proxy_path_is_gone(self):
+        status, _ = self.request("/proxy/imis/stations")
         self.assertEqual(status, 404)
+
+    def test_snapshot_equals_the_script_output_for_the_same_answers(self):
+        serve.CACHE.items.clear()
+        old = serve.FETCH_RAW
+        serve.FETCH_RAW = load_raw
+        try:
+            status, body = self.request("/data/imis.json")
+        finally:
+            serve.FETCH_RAW = old
+        self.assertEqual(status, 200)
+        served = json.loads(body.decode("utf-8"))
+        from datetime import datetime, timezone
+        fetched = datetime.strptime(served["fetched"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        self.assertEqual(body, fetch_imis.snapshot_bytes(load_raw(), fetched))
+
+    def test_snapshot_is_cached(self):
+        serve.CACHE.items.clear()
+        calls = []
+        old = serve.FETCH_RAW
+        serve.FETCH_RAW = lambda: calls.append(1) or load_raw()
+        try:
+            self.request("/data/imis.json")
+            self.request("/data/imis.json")
+        finally:
+            serve.FETCH_RAW = old
+        self.assertEqual(len(calls), 1)
+
+    def test_slf_failure_gives_502(self):
+        serve.CACHE.items.clear()
+        def broken():
+            raise OSError("no network")
+        old = serve.FETCH_RAW
+        serve.FETCH_RAW = broken
+        try:
+            status, _ = self.request("/data/imis.json")
+        finally:
+            serve.FETCH_RAW = old
+        self.assertEqual(status, 502)
 
 
 

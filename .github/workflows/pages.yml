@@ -1,4 +1,5 @@
-# Publishes web/ to GitHub Pages on every push to main.
+# Publishes web/ to GitHub Pages on every push to main, and every hour with a fresh SLF
+# station snapshot (web/data/imis.json, built by scripts/fetch_imis.py, never committed).
 # Upload and deploy run as two jobs with a pause in between: since late November 2026
 # deploy-pages often fails to find an artifact uploaded a moment earlier in the same job
 # ("No artifacts named github-pages", actions/deploy-pages#451). Re-running only the
@@ -7,6 +8,8 @@ name: Pages
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '23 * * * *'   # hourly, off the full hour; GitHub may start it late or skip it
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,6 +24,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # An SLF outage must never block a code update: reuse the published snapshot, or
+      # publish without one (the page then says the SLF stations are unavailable).
+      - name: SLF station snapshot
+        env:
+          LIVE_SNAPSHOT: https://denyfousek.github.io/ski-bums-delight/data/imis.json
+        run: |
+          mkdir -p web/data
+          if python3 scripts/fetch_imis.py web/data/imis.json; then exit 0; fi
+          echo "::warning::SLF request failed, reusing the published snapshot"
+          if curl -sfL --max-time 30 -o web/data/imis.json "$LIVE_SNAPSHOT"; then exit 0; fi
+          rm -f web/data/imis.json
+          echo "::warning::No station snapshot in this deployment"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
