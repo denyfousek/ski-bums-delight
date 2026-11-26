@@ -10,7 +10,9 @@ import {
   fetchBulletin, fetchHistory, addBulletinLayer, bulletinAt, renderBulletin, criticalRules, rulesLookup, maxLevel, PROBLEMS,
 } from './bulletin.js';
 import { fetchModelSnow, stationSamples, fitSnowline, snowlineFromClasses, describeFit } from './snowline.js';
-import { createSnowMaterial, recentreSnowMaterial } from './snowlook.js';
+import { createSnowMaterial, recentreSnowMaterial, updateSnowEye } from './snowlook.js';
+import { applyQuality, patchShadowPass, patchShadowCasters, setShadowTerminator } from './quality.js';
+import { smoothTerrain } from './terrainsmooth.js';
 import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.js';
 import { loadForestMask } from './forest.js';
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
@@ -36,6 +38,10 @@ let area = loadArea(storage);
 const MOBILE = window.matchMedia('(max-width: 760px), (pointer: coarse)').matches;
 // Snow view. `manual` is set once the user moves the slider; an estimate no longer moves it then.
 const snow = { on: storage.getItem('sbd-snow') !== '0', material: null, manual: false, fit: null, previousBasemap: null };
+const OWN_SHADOWS = patchShadowPass(Cesium); // before the viewer builds its first shader
+patchShadowCasters(Cesium); // tile skirts cast no shadows
+// High quality rendering: on by default except on phones; the choice is remembered.
+let highQuality = storage.getItem('sbd-hq') === null ? !MOBILE : storage.getItem('sbd-hq') === '1';
 // Every area change gets a number; answers of requests started for an older area are dropped.
 let areaGen = 0;
 
@@ -43,6 +49,8 @@ function text(el, s) { el.textContent = s; }
 
 // ---------- viewer ----------
 const terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(TERRAIN_URL, { requestVertexNormals: true });
+// Close-up tiles are smoothed at load (see terrainsmooth.js); ?terrain=raw shows them as delivered.
+if (new URLSearchParams(location.search).get('terrain') !== 'raw') smoothTerrain(Cesium, terrainProvider);
 const viewer = new Cesium.Viewer('globe', {
   baseLayer: false,
   terrainProvider,
@@ -223,9 +231,11 @@ function updateSun() {
   viewer.scene.globe.enableLighting = lightOn;
   viewer.scene.globe.dynamicAtmosphereLighting = false;
   if (snow.material) snow.material.uniforms.selfShade = lightOn ? 0 : 1;
-  const shadows = lightOn && $('sun-shadows').checked && Number($('sun-el').value) > 0;
-  viewer.shadows = shadows;
+  // High quality always casts terrain shadows; otherwise only on request.
+  const shadows = lightOn && ($('sun-shadows').checked || highQuality) && Number($('sun-el').value) > 0;
+  if (viewer.shadows !== shadows) viewer.shadows = shadows; // an unchanged value would clear the shadow map's rebuild flag
   viewer.terrainShadows = shadows ? Cesium.ShadowMode.ENABLED : Cesium.ShadowMode.DISABLED;
+  if (snow.material) snow.material.uniforms.shadowDark = shadows ? viewer.shadowMap.darkness : 1;
   scheduleShade();
 }
 
@@ -898,11 +908,24 @@ function applySnow() {
     snow.material = createSnowMaterial(Cesium, ...centre(area), { snowline: Number($('snow-line').value) });
   }
   globe.material = snow.on ? snow.material : undefined;
+  // Cesium shades the whole globe with clamp(lambert * multiplier + floor). The high-quality
+  // snow lights itself and divides that factor out again, which only works while the
+  // factor stays near 1 (colours above 1 are cut off on the way). So with high-quality
+  // snow the built-in shading is made gentle; the map below the snow line keeps a light relief.
+  const ownLight = highQuality && snow.on;
+  globe.lambertDiffuseMultiplier = ownLight ? 0.6 : 1.5;
+  globe.vertexShadowDarkness = ownLight ? 0.75 : 0.5;
   if (snow.material) {
+    snow.material.uniforms.quality = highQuality ? 1 : 0;
+    snow.material.uniforms.ownShadows = OWN_SHADOWS ? 1 : 0;
+    snow.material.uniforms.shadowDark = viewer.terrainShadows === Cesium.ShadowMode.ENABLED ? viewer.shadowMap.darkness : 1;
+    snow.material.uniforms.lambertMul = globe.lambertDiffuseMultiplier;
+    snow.material.uniforms.lambertFloor = globe.vertexShadowDarkness;
     snow.material.uniforms.selfShade = $('light-toggle').checked ? 0 : 1;
     snow.material.uniforms.contours = $('snow-contours').checked ? 1 : 0;
     snow.material.uniforms.strength = Number($('snow-strength').value) / 100;
   }
+  setShadowTerminator(viewer, OWN_SHADOWS && highQuality && snow.on);
   $('snow-controls').hidden = !snow.on;
 }
 
@@ -961,6 +984,21 @@ $('snow-toggle').onchange = () => {
 $('snow-line').oninput = () => setSnowline(Number($('snow-line').value), true);
 $('snow-auto').onclick = () => { snow.manual = false; estimateSnowline(); };
 $('snow-contours').onchange = applySnow;
+
+// ---------- rendering quality ----------
+function setQuality(on) {
+  highQuality = on;
+  storage.setItem('sbd-hq', on ? '1' : '0');
+  $('hq-toggle').checked = on;
+  $('sun-shadows').disabled = on;
+  applyQuality(Cesium, viewer, on, MOBILE);
+  updateSun();
+  applySnow(); // last: it may ask the shadow map for a rebuild
+}
+$('hq-toggle').onchange = () => setQuality($('hq-toggle').checked);
+// The snow shader works in coordinates relative to the camera; hand it the camera's
+// position (relative to the area centre) before every frame.
+viewer.scene.preRender.addEventListener(() => { if (snow.material) updateSnowEye(Cesium, snow.material, viewer.camera); });
 $('snow-strength').oninput = applySnow;
 
 // ---------- areas ----------
@@ -1019,6 +1057,7 @@ $('area-locate').onclick = () => {
 
 // ---------- start ----------
 fillAreaSelect();
+setQuality(highQuality);
 if (snow.on) { snow.previousBasemap = 'winter'; setBasemap('image'); }
 applySnow();
 initBulletin();

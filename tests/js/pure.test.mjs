@@ -478,3 +478,210 @@ test('stations: compass and label repair', () => {
   assert.equal(fixMojibake('BÃ¤rentÃ¤lli'), 'Bärentälli');
   assert.equal(fixMojibake('Gütsch'), 'Gütsch');
 });
+
+// ---------- terrain smoothing ----------
+import { fitPlanes, edgeBand, withNeighbours } from '../../web/js/terrainsmooth.js';
+
+// Irregular points over a 52 x 76 m tile (the size of a level-18 tile), about 0.6 m apart,
+// placed by a fixed pseudo-random sequence so the test is repeatable.
+function scatter(heightAt, count = 9000, width = 52, height = 76) {
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+  const x = new Float32Array(count); const y = new Float32Array(count); const z = new Float32Array(count);
+  for (let k = 0; k < count; k++) { x[k] = rnd() * width; y[k] = rnd() * height; z[k] = heightAt(x[k], y[k], rnd); }
+  return { x, y, z, width, height };
+}
+
+test('terrain smoothing: a steep tilted plane comes back unchanged, also at the border', () => {
+  // 40° slope: this is where averaging over mesh neighbours went wrong.
+  const a = 0.75; const b = -0.4;
+  const g = scatter((x, y) => 1900 + a * x + b * y);
+  const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, 1.6);
+  let worstZ = 0; let worstG = 0; let fitted = 0;
+  for (let k = 0; k < g.x.length; k++) {
+    if (!f.ok[k]) continue;
+    fitted++;
+    worstZ = Math.max(worstZ, Math.abs(f.z[k] - g.z[k]));
+    worstG = Math.max(worstG, Math.abs(f.gx[k] - a), Math.abs(f.gy[k] - b));
+  }
+  assert.equal(fitted, g.x.length, 'every vertex has a fit');
+  assert.ok(worstZ < 0.01, `height off by ${worstZ.toFixed(4)} m`);
+  assert.ok(worstG < 0.002, `slope off by ${worstG.toFixed(5)}`);
+});
+
+test('terrain smoothing: jitter is removed, the slope underneath is kept', () => {
+  const a = 0.6; const b = 0.2;
+  const g = scatter((x, y, rnd) => 2000 + a * x + b * y + (rnd() - 0.5) * 0.6); // ±0.3 m noise
+  const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, 1.6);
+  let before = 0; let after = 0; let grad = 0;
+  for (let k = 0; k < g.x.length; k++) {
+    const truth = 2000 + a * g.x[k] + b * g.y[k];
+    before += (g.z[k] - truth) ** 2;
+    after += (f.z[k] - truth) ** 2;
+    grad += (f.gx[k] - a) ** 2 + (f.gy[k] - b) ** 2;
+  }
+  const n = g.x.length;
+  const rmsBefore = Math.sqrt(before / n);
+  const rmsAfter = Math.sqrt(after / n);
+  near(rmsBefore, 0.173, 0.01, 'input noise');
+  assert.ok(rmsAfter < rmsBefore * 0.2, `noise ${rmsBefore.toFixed(3)} -> ${rmsAfter.toFixed(3)} m`);
+  // Slope error of the normals: under 2° on average.
+  assert.ok(Math.sqrt(grad / n) < Math.tan((2 * Math.PI) / 180), `slope rms ${Math.sqrt(grad / n).toFixed(4)}`);
+});
+
+test('terrain smoothing: real shape larger than the fit survives', () => {
+  // A ridge 4 m high and about 25 m wide. The heights are fitted over 0.6 m and must stay
+  // within a few centimetres; the wider fit used for the normals rounds the crest by
+  // about curvature x sigma² / 2 = 0.14 m, no more.
+  const ridge = (x) => 4 * Math.exp(-((x - 26) ** 2) / (2 * 6 ** 2));
+  const g = scatter((x) => 2100 + ridge(x));
+  const worst = (sigma) => {
+    const f = fitPlanes(g.x, g.y, g.z, g.width, g.height, sigma);
+    let w = 0;
+    for (let k = 0; k < g.x.length; k++) w = Math.max(w, Math.abs(f.z[k] - g.z[k]));
+    return w;
+  };
+  assert.ok(worst(0.6) < 0.04, `heights changed by ${worst(0.6).toFixed(3)} m`);
+  assert.ok(worst(1.6) < 0.2, `wide fit changed by ${worst(1.6).toFixed(3)} m`);
+});
+
+test('terrain smoothing: too few points give no fit and keep their height', () => {
+  const x = Float32Array.from([1, 30]); const y = Float32Array.from([1, 60]); const z = Float32Array.from([100, 200]);
+  const f = fitPlanes(x, y, z, 52, 76, 1.6);
+  assert.deepEqual([...f.ok], [0, 0]);
+  assert.deepEqual([...f.z], [100, 200]);
+  // Points on one line carry no plane either.
+  const n = 200;
+  const lx = new Float32Array(n).fill(10); const ly = Float32Array.from({ length: n }, (_, k) => k * 0.3); const lz = new Float32Array(n).fill(5);
+  assert.ok(fitPlanes(lx, ly, lz, 52, 76, 1.6).ok.every((v) => v === 0));
+});
+
+// ---------- rendering quality ----------
+import { patchShadowPass, patchShadowCasters, setShadowTerminator, QUALITY } from '../../web/js/quality.js';
+
+// Stand-in for Cesium.ShadowMapShader: returns a shader source whose last part ends the
+// way CesiumJS 1.121 ends its shadow pass.
+function fakeCesium(lastLine = 'out_FragColor.rgb *= visibility;') {
+  return {
+    ShadowMapShader: {
+      createShadowReceiveFragmentShader: function original() {
+        // out_FragColor.rgb *= visibility;   (the patch looks for this text in the function)
+        return { sources: ['void czm_shadow_receive_main() {}', `void main() {\n  shadowParameters.darkness = d;\n  float visibility = 1.0;\n  ${lastLine}\n}`] };
+      },
+    },
+  };
+}
+
+test('shadow pass patch: swaps the grey multiply for the per-fragment ratio, once', () => {
+  const C = fakeCesium();
+  assert.equal(patchShadowPass(C), true);
+  const out = C.ShadowMapShader.createShadowReceiveFragmentShader();
+  const text = out.sources[1];
+  assert.ok(text.includes('#ifdef SBD_SNOW'));
+  assert.ok(text.includes('sbd_shadowRatio'));
+  // The original line survives in the #else branch, for shaders without the snow material.
+  assert.equal(text.split('out_FragColor.rgb *= visibility;').length - 1, 1);
+  assert.ok(text.indexOf('#else') < text.indexOf('out_FragColor.rgb *= visibility;'));
+  // Patching twice does not wrap twice.
+  const fn = C.ShadowMapShader.createShadowReceiveFragmentShader;
+  assert.equal(patchShadowPass(C), true);
+  assert.equal(C.ShadowMapShader.createShadowReceiveFragmentShader, fn);
+});
+
+test('shadow pass patch: leaves an unknown Cesium alone', () => {
+  assert.equal(patchShadowPass({}), false);
+  const C = { ShadowMapShader: { createShadowReceiveFragmentShader: () => ({ sources: ['void main() { colour *= v; }'] }) } };
+  const fn = C.ShadowMapShader.createShadowReceiveFragmentShader;
+  assert.equal(patchShadowPass(C), false);
+  assert.equal(C.ShadowMapShader.createShadowReceiveFragmentShader, fn);
+});
+
+test('shadow terminator switch marks the shadow map dirty only on a change', () => {
+  const viewer = { shadowMap: { _terrainBias: { normalShading: true }, dirty: false } };
+  setShadowTerminator(viewer, true);
+  assert.equal(viewer.shadowMap._terrainBias.normalShading, false);
+  assert.equal(viewer.shadowMap.dirty, true);
+  viewer.shadowMap.dirty = false;
+  setShadowTerminator(viewer, true);
+  assert.equal(viewer.shadowMap.dirty, false);
+  setShadowTerminator(viewer, false);
+  assert.equal(viewer.shadowMap._terrainBias.normalShading, true);
+  assert.ok(QUALITY.high.shadowSize > QUALITY.standard.shadowSize);
+});
+
+test('shadow pass patch: the terminator switch becomes part of the shader cache key', () => {
+  const C = fakeCesium();
+  C.ShadowMapShader.getShadowReceiveShaderKeyword = () => 'receiveShadow terrain';
+  patchShadowPass(C);
+  const key = (normalShading) => C.ShadowMapShader.getShadowReceiveShaderKeyword({ _terrainBias: { normalShading } }, true, true, true);
+  assert.equal(key(true), 'receiveShadow terrain');
+  assert.notEqual(key(false), key(true));
+  assert.equal(C.ShadowMapShader.getShadowReceiveShaderKeyword({}, true, false, false), 'receiveShadow terrain');
+});
+
+test('terrain smoothing: two tiles agree on their shared edge when each sees the other', () => {
+  // One rough slope, cut into a west and an east tile of 40 x 40 m.
+  let seed = 7;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
+  const height = (x, y) => 0.8 * x + 0.3 * y + 0.25 * Math.sin(x * 1.3) * Math.cos(y * 1.7);
+  const W = 40; const H = 40; const sigma = 1.6; const margin = 3 * sigma;
+  const tile = (x0) => {
+    const x = []; const y = []; const z = [];
+    for (let j = 0; j <= 60; j++) { // vertices on the shared edge, the same in both tiles
+      x.push(x0 === 0 ? W : 0); y.push((j / 60) * H); z.push(height(W, (j / 60) * H));
+    }
+    for (let i = 0; i < 4000; i++) {
+      const px = rnd() * W; const py = rnd() * H;
+      x.push(px); y.push(py); z.push(height(x0 + px, py) + (rnd() - 0.5) * 0.3);
+    }
+    return { x: Float32Array.from(x), y: Float32Array.from(y), z: Float32Array.from(z) };
+  };
+  const a = tile(0); const b = tile(W);
+  const bandA = edgeBand(a.x, a.y, a.z, W, H, margin);
+  const bandB = edgeBand(b.x, b.y, b.z, W, H, margin);
+  assert.ok(bandA.x.length < a.x.length / 2 && bandA.x.length > 100);
+  const fitWith = (t, neighbours) => {
+    const all = withNeighbours(t.x, t.y, t.z, W, H, margin, neighbours);
+    assert.ok(Math.abs(all.x[0] - (t.x[0] + margin)) < 1e-4); // own vertices first, shifted
+    return fitPlanes(all.x, all.y, all.z, all.width, all.height, sigma);
+  };
+  const gap = (fa, fb) => { let g = 0; for (let j = 0; j <= 60; j++) g = Math.max(g, Math.abs(fa.gx[j] - fb.gx[j]), Math.abs(fa.gy[j] - fb.gy[j])); return g; };
+  const alone = gap(fitWith(a, []), fitWith(b, []));
+  const together = gap(fitWith(a, [{ band: bandB, offX: W, offY: 0 }]), fitWith(b, [{ band: bandA, offX: -W, offY: 0 }]));
+  assert.ok(together < 0.01, `slopes differ by ${together}`);
+  assert.ok(alone > 5 * together, `alone ${alone}, together ${together}`);
+});
+
+test('shadow casters: terrain tiles are drawn into the shadow map without their skirts', () => {
+  let calls = 0;
+  const C = { ShadowMap: { createCastDerivedCommand(maps, command, dirty, context, result) {
+    calls++;
+    return { castCommands: [{ count: command.count }, undefined, { count: command.count }], context };
+  } } };
+  assert.equal(patchShadowCasters(C), true);
+  const wrapped = C.ShadowMap.createCastDerivedCommand;
+  assert.equal(patchShadowCasters(C), true);
+  assert.equal(C.ShadowMap.createCastDerivedCommand, wrapped); // not wrapped twice
+  const tile = { count: 1200, owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  const r = C.ShadowMap.createCastDerivedCommand([], tile, false, 'ctx');
+  assert.deepEqual(r.castCommands.map((c) => c && c.count), [1000, undefined, 1000]);
+  assert.equal(r.context, 'ctx'); // arguments are passed through
+  assert.equal(tile.count, 1200); // the picture keeps the skirts
+  // Already without skirts (globe.showSkirts off), not terrain, or no mesh yet: untouched.
+  const bare = { count: 1000, owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], bare).castCommands[0].count, 1000);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50, owner: {} }).castCommands[0].count, 50);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50 }).castCommands[0].count, 50);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { count: 50, owner: { data: {} } }).castCommands[0].count, 50);
+  assert.equal(calls, 5);
+  // The debug wireframe draws line indices of the same tile: left alone.
+  C.PrimitiveType = { TRIANGLES: 4, LINES: 1 };
+  const mesh = { owner: { data: { renderedMesh: { indexCountWithoutSkirts: 1000 } } } };
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { ...mesh, count: 2400, primitiveType: 1 }).castCommands[0].count, 2400);
+  assert.equal(C.ShadowMap.createCastDerivedCommand([], { ...mesh, count: 1200, primitiveType: 4 }).castCommands[0].count, 1000);
+});
+
+test('shadow casters: leaves an unknown Cesium alone', () => {
+  assert.equal(patchShadowCasters({}), false);
+  assert.equal(patchShadowCasters({ ShadowMap: {} }), false);
+});
