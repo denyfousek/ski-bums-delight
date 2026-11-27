@@ -2,6 +2,7 @@
 // Free tier is non-commercial only; data CC BY 4.0 (Open-Meteo / MeteoSwiss).
 import { OPEN_METEO_URL } from './config.js';
 import { compass } from './stations.js';
+import { sourceLine } from './newsnow.js';
 
 export async function fetchWind(lon, lat) {
   const q = new URLSearchParams({
@@ -64,5 +65,5 @@ export function renderWind(el, data) {
   const units = document.createElement('div');
   units.className = 'muted';
   units.textContent = 'Wind and gusts in km/h, 0° line in m, snowfall in cm per hour.';
-  el.append(meta, table, units);
+  el.append(meta, table, units, sourceLine());
 }

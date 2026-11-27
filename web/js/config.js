@@ -37,7 +37,6 @@ export const IDENTIFY_LAYERS = [
 
 export const IDENTIFY_URL = 'https://api3.geo.admin.ch/rest/services/api/MapServer/identify';
 export const BULLETIN_URL = 'https://aws.slf.ch/api/bulletin/caaml/en/geojson';
-export const IMIS_PROXY = '/proxy/imis/';
 export const METEOSWISS_SNOW_URL =
   'https://data.geo.admin.ch/ch.meteoschweiz.messwerte-schneehoehe-automatisch-10min/ch.meteoschweiz.messwerte-schneehoehe-automatisch-10min_en.json';
 export const OPEN_METEO_URL = 'https://api.open-meteo.com/v1/forecast';

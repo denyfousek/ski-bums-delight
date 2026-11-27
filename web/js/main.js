@@ -17,6 +17,7 @@ import { loadDem, computeSlopeAspect, renderOverlay, sampleGrid } from './slope.
 import { loadForestMask } from './forest.js';
 import { fetchImis, fetchMeteoSwissSnow, addStationEntities, compass } from './stations.js';
 import { fetchWind, renderWind } from './weather.js';
+import { fetchNewSnow, newSnowDays, renderNewSnow, zurichToday } from './newsnow.js';
 import { searchScenes, loadScene } from './sentinel.js';
 import { sunPosition, sunTimes } from './sun.js';
 import {
@@ -400,6 +401,22 @@ $('history-load').onclick = async () => {
 };
 $('history-today').onclick = () => showBulletinFor(...centre(area));
 
+// ---------- new snow ----------
+// For the clicked point, or the area centre before the first click and after an area change.
+// Fast clicking is debounced, and every answer is checked against a counter.
+let newSnowTurn = 0;
+let newSnowTimer = null;
+function loadNewSnow(lon, lat, where) {
+  const turn = ++newSnowTurn;
+  clearTimeout(newSnowTimer);
+  text($('newsnow'), 'Loading new snow forecast…');
+  newSnowTimer = setTimeout(() => {
+    fetchNewSnow(lon, lat)
+      .then((d) => { if (turn === newSnowTurn) renderNewSnow($('newsnow'), newSnowDays(d, zurichToday()), where); })
+      .catch((err) => { if (turn === newSnowTurn) text($('newsnow'), `New snow forecast failed: ${err.message}`); });
+  }, 350);
+}
+
 // ---------- stations ----------
 async function initStations() {
   const gen = areaGen;
@@ -407,7 +424,7 @@ async function initStations() {
   text(el, 'Loading…');
   const [imis, ms] = await Promise.allSettled([fetchImis(area), fetchMeteoSwissSnow(area)]);
   if (gen !== areaGen) return;
-  const list = [...(imis.status === 'fulfilled' ? imis.value : []), ...(ms.status === 'fulfilled' ? ms.value : [])]
+  const list = [...(imis.status === 'fulfilled' ? imis.value.stations : []), ...(ms.status === 'fulfilled' ? ms.value : [])]
     .sort((a, b) => b.elevation - a.elevation);
   state.stations = list;
   el.replaceChildren();
@@ -434,16 +451,19 @@ async function initStations() {
     row.append(b, document.createElement('br'), document.createTextNode(`${parts.join(' · ') || 'no current values'} — ${s.source} ${when}`));
     el.append(row);
   }
+  const head = document.createElement('div');
   if (imis.status === 'rejected') {
-    const warn = document.createElement('div');
-    // The SLF API sends no CORS header, so IMIS needs the local proxy in serve.py.
-    const local = ['localhost', '127.0.0.1'].includes(location.hostname);
-    warn.className = local ? 'zone' : 'muted small';
-    warn.textContent = local
-      ? `SLF stations unavailable: ${imis.reason.message}`
-      : 'SLF stations (IMIS) only in the local version; showing MeteoSwiss stations.';
-    el.prepend(warn);
+    head.className = 'zone';
+    head.textContent = `SLF stations unavailable (${imis.reason.message}); showing MeteoSwiss stations only.`;
+  } else {
+    const snap = imis.value;
+    const when = new Date(snap.fetched).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    head.className = snap.stale ? 'zone' : 'muted small';
+    head.textContent = snap.stale
+      ? `SLF snapshot is ${snap.ageH === null ? 'of unknown age' : `${Math.round(snap.ageH)} h old`} (${when}); values may be outdated (${snap.note}).`
+      : `SLF snapshot ${when}, ${snap.note}.`;
   }
+  el.prepend(head);
   if (!list.length) el.append(document.createTextNode('No stations in this area.'));
   if (state.stationsDs) viewer.dataSources.remove(state.stationsDs, true);
   state.stationsDs = addStationEntities(viewer, list);
@@ -466,6 +486,8 @@ function viewCenter() {
   const canvas = viewer.scene.canvas;
   const mid = new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2);
   const ray = viewer.camera.getPickRay(mid);
+  // A canvas of zero size (page loaded in a hidden tab) gives no ray; callers fall back.
+  if (!ray) return null;
   // Terrain pick needs loaded tiles; fall back to the ellipsoid (a few hundred metres off in the Alps).
   const pos = viewer.scene.globe.pick(ray, viewer.scene) || viewer.camera.pickEllipsoid(mid);
   if (!pos) return null;
@@ -869,6 +891,7 @@ clickHandler.setInputAction(async (ev) => {
 
   if (state.bulletin && bulletinAt(state.bulletin, lon, lat)) showBulletinFor(lon, lat);
 
+  loadNewSnow(lon, lat, 'Clicked point');
   $('wind').textContent = 'Loading forecast…';
   fetchWind(lon, lat)
     .then((d) => { if (turn === clickTurn) renderWind($('wind'), d); })
@@ -1017,6 +1040,7 @@ async function loadAreaData() {
   resetHistory();
   if (state.bulletin) showBulletinFor(...centre(area));
   initSentinel();
+  loadNewSnow(...centre(area), `Centre of ${area.name}`);
   await initStations();
   if (gen !== areaGen) return; // the area changed meanwhile; the newer load does the estimate
   await estimateSnowline();

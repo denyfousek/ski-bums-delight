@@ -8,6 +8,7 @@ a provider that renames a field or moves an endpoint should fail here before a u
 notices an empty panel.
 """
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -74,15 +75,21 @@ def check_bulletin_history():
 
 
 def check_imis():
-    _, stations = get_json("https://measurement-api.slf.ch/public/api/imis/stations")
-    need(isinstance(stations, list) and len(stations) > 50, "station list too short")
-    for key in ("code", "label", "lon", "lat", "elevation"):
-        need(key in stations[0], "station field %s missing" % key)
-    code = next(s["code"] for s in stations if s.get("type") == "SNOW_FLAT") if any(s.get("type") == "SNOW_FLAT" for s in stations) else stations[0]["code"]
-    _, series = get_json("https://measurement-api.slf.ch/public/api/imis/station/%s/measurements" % code)
-    need(isinstance(series, list) and series, "empty measurement series for %s" % code)
-    need("measure_date" in series[0], "measure_date missing")
-    return "%d stations, %d records for %s" % (len(stations), len(series), code)
+    # The same three requests and the same condensing the hourly snapshot uses.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import fetch_imis
+    raw = fetch_imis.fetch_raw(get=lambda url: get_json(url)[1])
+    need(isinstance(raw["stations"], list) and len(raw["stations"]) > 50, "station list too short")
+    for key in ("code", "label", "lon", "lat", "elevation", "type"):
+        need(key in raw["stations"][0], "station field %s missing" % key)
+    need(len(raw["measurements"]) > 1000, "bulk measurements too short")
+    for key in ("station_code", "measure_date", "HS", "VW_30MIN_MEAN", "VW_30MIN_MAX", "DW_30MIN_MEAN", "TA_30MIN_MEAN"):
+        need(any(key in m for m in raw["measurements"][:200]), "measurement field %s missing" % key)
+    need(raw["daily"] and all(k in raw["daily"][0] for k in ("station_code", "measure_date", "HS", "HN_1D")), "daily-snow fields missing")
+    snap = fetch_imis.build_snapshot(raw, datetime.now(timezone.utc))
+    with_snow = sum(1 for st in snap["stations"] if st["snowCm"] is not None)
+    need(with_snow > 50, "only %d stations with snow depth" % with_snow)
+    return "%d stations, %d with snow depth, %d daily rows" % (len(snap["stations"]), with_snow, len(raw["daily"]))
 
 
 def check_meteoswiss():
@@ -119,6 +126,25 @@ def check_open_meteo_snow():
         need("snow_depth" in item.get("current", {}), "current.snow_depth missing")
         need(item["current_units"]["snow_depth"] == "m", "snow depth unit is no longer metres")
     return "snow depth %s m at %d m" % (d[0]["current"]["snow_depth"], d[0]["elevation"])
+
+
+def check_open_meteo_newsnow():
+    # The query of the new-snow table (web/js/newsnow.js).
+    q = urllib.parse.urlencode({
+        "latitude": "46.6300", "longitude": "8.5900",
+        "daily": "precipitation_sum,wind_gusts_10m_max", "hourly": "freezing_level_height",
+        "models": "meteoswiss_icon_seamless", "cell_selection": "nearest", "timezone": "Europe/Zurich",
+        "past_days": "7", "forecast_days": "6", "wind_speed_unit": "kmh",
+    })
+    _, d = get_json("https://api.open-meteo.com/v1/forecast?" + q)
+    days = d.get("daily", {})
+    need(len(days.get("time", [])) == 13, "expected 13 days (7 back, today, 5 ahead)")
+    need(d["daily_units"]["precipitation_sum"] == "mm", "precipitation is no longer in mm")
+    need(d["daily_units"]["wind_gusts_10m_max"] == "km/h", "gusts are no longer in km/h")
+    need("freezing_level_height" in d.get("hourly", {}), "hourly freezing level missing")
+    complete = sum(1 for v in days["precipitation_sum"][7:] if v is not None)
+    need(complete >= 4, "only %d days from today with a value" % complete)
+    return "today plus %d days with values, cell %d m" % (complete - 1, d["elevation"])
 
 
 def check_alti3d():
@@ -213,6 +239,7 @@ CHECKS = [
     ("MeteoSwiss snow depth", check_meteoswiss),
     ("Open-Meteo wind forecast", check_open_meteo_wind),
     ("Open-Meteo snow depth", check_open_meteo_snow),
+    ("Open-Meteo new snow", check_open_meteo_newsnow),
     ("swissALTI3D (STAC + GeoTIFF)", check_alti3d),
     ("swisstopo 3D terrain", check_terrain),
     ("swisstopo WMTS tiles", check_wmts),

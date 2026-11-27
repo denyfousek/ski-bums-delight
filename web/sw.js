@@ -3,13 +3,15 @@
 // and all tiles come from other servers and are not stored here. It only handles the app's own files (same origin, GET):
 //   network first, so an update is picked up on the next load,
 //   cache as fallback, so the shell opens offline.
-// Map tiles, the bulletin, stations and forecasts are other origins and are never touched;
-// the local proxy (/proxy/) is left alone as well.
-const CACHE = 'sbd-shell-v6';
+// Map tiles, the bulletin, MeteoSwiss stations and forecasts are other origins and are never
+// touched. The SLF station snapshot data/imis.json is the app's own file and follows the same
+// rule (network first); the app reads its age from the time stamp inside, so a cached copy
+// offline shows the age warning.
+const CACHE = 'sbd-shell-v7';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icons/icon-192.png',
   'js/main.js', 'js/ui.js', 'js/config.js', 'js/areas.js', 'js/bulletin.js', 'js/forest.js',
-  'js/gpx.js', 'js/proj.js', 'js/quality.js', 'js/sentinel.js', 'js/shade.js', 'js/slope.js', 'js/snowline.js',
+  'js/gpx.js', 'js/newsnow.js', 'js/proj.js', 'js/quality.js', 'js/sentinel.js', 'js/shade.js', 'js/slope.js', 'js/snowline.js',
   'js/snowlook.js', 'js/stations.js', 'js/sun.js', 'js/terrainsmooth.js', 'js/terrainsmooth.worker.js', 'js/weather.js',
 ];
 
@@ -28,7 +30,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
-  if (req.method !== 'GET' || url.origin !== self.location.origin || url.pathname.includes('/proxy/')) return;
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
   event.respondWith(
     fetch(req)
       .then((res) => {

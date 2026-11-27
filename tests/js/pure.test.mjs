@@ -12,7 +12,7 @@ import {
 } from '../../web/js/gpx.js';
 import { fitSnowline, snowlineFromClasses, samplePoints, stationSamples } from '../../web/js/snowline.js';
 import { boxAround, homeView, isArea, loadArea, saveArea, PRESETS, DEFAULT_AREA, inSwitzerland } from '../../web/js/areas.js';
-import { latestValues, compass, fixMojibake } from '../../web/js/stations.js';
+import { compass, imisFromSnapshot, SNAPSHOT_MAX_AGE_H } from '../../web/js/stations.js';
 
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} ± ${tol}, got ${a}`);
 
@@ -453,30 +453,33 @@ test('areas: storage round trip, junk falls back to the default', () => {
 });
 
 // ---------- stations ----------
-test('stations: each value comes from the newest record that has it', () => {
-  const v = latestValues([
-    { measure_date: '2026-11-25T06:00:00Z', HS: 40, VW_30MIN_MEAN: 2, VW_30MIN_MAX: 5, DW_30MIN_MEAN: 180, TA_30MIN_MEAN: -3 },
-    { measure_date: '2026-11-24T06:00:00Z', HS: 30, VW_30MIN_MEAN: 1, VW_30MIN_MAX: 2, DW_30MIN_MEAN: 90, TA_30MIN_MEAN: -1 },
-    { measure_date: '2026-11-25T06:30:00Z', HS: null, VW_30MIN_MEAN: 5, DW_30MIN_MEAN: 200 },
-  ]);
-  assert.equal(v.snowCm, 40);
-  assert.equal(v.snowChange24h, 10);
-  near(v.windKmh, 18, 1e-9);
-  assert.equal(v.gustKmh, null, 'no gust in the newest wind record: no value, not 0');
-  assert.equal(v.windDir, 200);
-  assert.equal(v.airC, -3);
-  const empty = latestValues([]);
-  assert.equal(empty.snowCm, null);
-  assert.equal(empty.time, null);
+test('stations: snapshot is filtered to the area, age comes from the file', () => {
+  const snap = {
+    fetched: '2026-11-26T20:00:00Z',
+    note: 'raw station data, unchecked',
+    stations: [
+      { code: 'GOS3', lon: 8.62, lat: 46.65, elevation: 2286, snowCm: 50 },
+      { code: 'EDGE', lon: 8.75, lat: 46.65, elevation: 2000, snowCm: null }, // inside the 0.06° margin
+      { code: 'FAR1', lon: 9.8, lat: 46.7, elevation: 2558, snowCm: 80 },
+    ],
+  };
+  const box = { west: 8.45, south: 46.55, east: 8.70, north: 46.68 };
+  const fresh = imisFromSnapshot(snap, box, Date.parse('2026-11-26T21:30:00Z'));
+  assert.deepEqual(fresh.stations.map((s) => s.code), ['GOS3', 'EDGE']);
+  assert.equal(fresh.stations[0].source, 'SLF IMIS');
+  near(fresh.ageH, 1.5, 1e-9);
+  assert.equal(fresh.stale, false);
+  const old = imisFromSnapshot(snap, box, Date.parse('2026-11-26T20:00:00Z') + (SNAPSHOT_MAX_AGE_H + 0.1) * 3600e3);
+  assert.equal(old.stale, true, 'older than the threshold: warn, also offline');
+  assert.equal(imisFromSnapshot({ ...snap, fetched: 'garbage' }, box).stale, true);
+  assert.throws(() => imisFromSnapshot({}, box));
 });
 
-test('stations: compass and label repair', () => {
+test('stations: compass', () => {
   assert.equal(compass(0), 'N');
   assert.equal(compass(225), 'SW');
   assert.equal(compass(350), 'N');
   assert.equal(compass(null), '');
-  assert.equal(fixMojibake('BÃ¤rentÃ¤lli'), 'Bärentälli');
-  assert.equal(fixMojibake('Gütsch'), 'Gütsch');
 });
 
 // ---------- terrain smoothing ----------
